@@ -1,0 +1,59 @@
+name: Check and deploy to Beget
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm smoke
+      - run: bash -n deploy/activate.sh && bash -n deploy/receiver.sh
+      - name: Package frontend and backend from the tested release
+        shell: bash
+        run: |
+          mkdir artifacts
+          tar -czf "artifacts/$GITHUB_SHA.tgz" -C release .
+          cd artifacts
+          sha256sum "$GITHUB_SHA.tgz" > "$GITHUB_SHA.tgz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beget-release
+          path: artifacts/
+          retention-days: 14
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.BEGET_READY == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: beget-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: beget-release
+          path: artifacts/
+      - run: node scripts/remote.mjs deploy
+        env:
+          BEGET_SSH_HOST: ${{ secrets.BEGET_SSH_HOST }}
+          BEGET_SSH_KEY: ${{ secrets.BEGET_SSH_KEY }}
+          BEGET_SSH_KNOWN_HOSTS: ${{ secrets.BEGET_SSH_KNOWN_HOSTS }}
+          BEGET_SSH_PORT: ${{ vars.BEGET_SSH_PORT }}
+          BEGET_IP: ${{ vars.BEGET_IP }}

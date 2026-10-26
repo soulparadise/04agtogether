@@ -1,0 +1,11 @@
+node_modules/
+release/
+frontend/dist/
+*.tgz
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_ed25519*
+.ssh/

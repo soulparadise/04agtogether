@@ -1,0 +1,24 @@
+# 04agtogether deployment v1
+# Replace both placeholders with paths verified on this Beget account.
+# The document root is 04agtogether/public_html; place this in 04agtogether/.htaccess,
+# matching the existing Beget ws-test configuration. The root app.js is a loader.
+Options -Indexes -MultiViews
+PassengerEnabled on
+PassengerAppRoot "__SITE_ROOT__"
+PassengerAppType node
+PassengerStartupFile app.js
+PassengerNodejs "__NODE_BIN__"
+PassengerAppEnv production
+PassengerStickySessions on
+PassengerStickySessionsCookieName _04agtogether_route
+
+# Enable these rules only after checking the certificate for BOTH names.
+# ACME challenge files stay available without redirects.
+# RewriteEngine On
+# RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+# RewriteCond %{HTTP_HOST} ^www\.soulparadise\.ru$ [NC]
+# RewriteRule ^ https://soulparadise.ru%{REQUEST_URI} [R=301,L]
+# RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+# RewriteCond %{HTTPS} !=on
+# RewriteCond %{HTTP:X-Forwarded-Proto} !^https$ [NC]
+# RewriteRule ^ https://soulparadise.ru%{REQUEST_URI} [R=301,L]

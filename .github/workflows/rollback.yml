@@ -1,0 +1,31 @@
+name: Restore an existing Beget release
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Full 40-character SHA of a previously deployed release
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main' && vars.BEGET_READY == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: beget-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+      - run: node scripts/remote.mjs rollback
+        env:
+          RELEASE_ID: ${{ inputs.release }}
+          BEGET_SSH_HOST: ${{ secrets.BEGET_SSH_HOST }}
+          BEGET_SSH_KEY: ${{ secrets.BEGET_SSH_KEY }}
+          BEGET_SSH_KNOWN_HOSTS: ${{ secrets.BEGET_SSH_KNOWN_HOSTS }}
+          BEGET_SSH_PORT: ${{ vars.BEGET_SSH_PORT }}
+          BEGET_IP: ${{ vars.BEGET_IP }}
