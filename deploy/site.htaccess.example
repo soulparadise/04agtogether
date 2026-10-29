@@ -10,7 +10,7 @@ PassengerStartupFile app.js
 PassengerNodejs "__NODE_BIN__"
 PassengerAppEnv production
 PassengerStickySessions on
-PassengerStickySessionsCookieName _04agtogether_route
+# Keep Passenger's default cookie name: Beget rejects a custom name here.
 
 # Rooms live in one Node process. Sticky sessions do NOT share rooms across
 # workers. Confirm Beget's per-site process limit before the first deployment.
