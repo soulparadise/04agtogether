@@ -1,0 +1,118 @@
+import { PlaybackSync } from '../../frontend/src/player/PlaybackSync.mjs';
+import { ForeignVideoAdapter } from './ForeignVideoAdapter.mjs';
+import { samePage } from './security.mjs';
+import { childFrameLayout } from './frame-layout.mjs';
+
+// Runs exclusively in Chrome's ISOLATED world. No credentials, DOM bridge,
+// postMessage listener or page-script injection.
+globalThis.__04agtogetherContent?.destroy();
+let sync, adapter, video, observer, timer, overlay, statusText, startButton, active = false, owner = false, state, metadataSource, selectedPage;
+const bindings = [];
+let lastDiscovered, lastFrameLayout = '', discoveryTimer;
+const engine = payload => chrome.runtime.sendMessage({ target: 'engine', type: 'content', payload });
+function videos() { return [...document.querySelectorAll('video')].filter(v => area(v) > 0 && getComputedStyle(v).visibility !== 'hidden').sort((a, b) => area(b) - area(a)); }
+function area(element) { const rect = element.getBoundingClientRect(); return Math.max(0, rect.width) * Math.max(0, rect.height); }
+function status(text) {
+  if (statusText?.textContent === text) return;
+  if (statusText) statusText.textContent = text;
+  void engine({ type: 'status', status: text }).catch(() => {});
+}
+function panel() {
+  if (overlay) return;
+  overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647';
+  const root = overlay.attachShadow({ mode: 'closed' });
+  const box = document.createElement('div'); box.style.cssText = 'max-width:300px;padding:12px;background:#142019;color:#edf5de;border:1px solid #a2b888;border-radius:8px;font:12px/1.5 system-ui';
+  const title = document.createElement('strong'); title.textContent = '04agtogether';
+  statusText = document.createElement('p'); statusText.style.margin = '6px 0';
+  startButton = document.createElement('button'); startButton.textContent = 'Начать просмотр'; startButton.hidden = true;
+  startButton.addEventListener('click', () => sync?.startViewing());
+  box.append(title, statusText, startButton); root.append(box); document.documentElement.append(overlay);
+}
+function releaseVideo() {
+  bindings.splice(0).forEach(([element, event, listener]) => element.removeEventListener(event, listener));
+  sync?.destroy(); sync = null; adapter = null; video = null; metadataSource = null;
+}
+async function metadata() {
+  const duration = adapter?.getDuration();
+  if (!owner || !state?.sourceId || duration === null || !duration || (state.duration !== null && Math.abs(state.duration - duration) < 0.1) || metadataSource === state.sourceId) return;
+  metadataSource = state.sourceId;
+  try { const reply = await engine({ type: 'intent', action: 'metadata', duration }); if (!reply?.ok) metadataSource = null; }
+  catch { metadataSource = null; }
+}
+function selectVideo() {
+  if (!active) return;
+  const selected = videos()[0];
+  if (video?.isConnected && video === selected) return;
+  if (!selected) { releaseVideo(); status('HTML5 video не найден. Запустите плеер; закрытый или недоступный iframe требует отдельного разрешения.'); return; }
+  releaseVideo(); video = selected; adapter = new ForeignVideoAdapter(video);
+  const ownAdapter = adapter;
+  sync = new PlaybackSync({ adapter,
+    request: async () => {
+      const reply = await engine({ type: 'get' });
+      if (!reply?.ok) throw new Error('Connection lost');
+      return reply;
+    },
+    onState: next => { state = next; }, onStatus: status, onError: status,
+    onBlocked: blocked => { if (startButton) startButton.hidden = !blocked; }, onMetadata: () => void metadata()
+  });
+  for (const [event, action] of Object.entries({ play: 'play', pause: 'pause', seeked: 'seek' })) {
+    const listener = async () => {
+      if (ownAdapter.consume(event) || !active) return;
+      if (!owner) { sync?.apply(true); return; }
+      // Do not let an old server snapshot undo an in-progress local gesture.
+      ownAdapter.intentPending++;
+      try {
+        const reply = await engine({ type: 'intent', action, position: ownAdapter.getCurrentTime() });
+        if (!reply?.ok) status(reply?.error?.message || 'Команда не подтверждена.');
+        if (reply?.state && sync) sync.accept(reply.state);
+      } catch { status('Нет связи с расширением. Подключите плеер заново.'); }
+      finally { ownAdapter.intentPending--; if (adapter === ownAdapter) sync?.apply(true); }
+    };
+    video.addEventListener(event, listener); bindings.push([video, event, listener]);
+  }
+  if (state) sync.accept(state);
+  void sync.refresh(); void metadata();
+}
+async function start() {
+  const reply = await engine({ type: 'attach' });
+  if (!reply?.ok) { panel(); status(reply?.error?.message || 'Сначала подключите эту вкладку в popup расширения.'); return; }
+  stop(); active = true; owner = reply.owner; state = reply.state; selectedPage = state.source.url; panel();
+  observer = new MutationObserver(selectVideo); observer.observe(document.documentElement, { childList: true, subtree: true });
+  timer = setInterval(() => { selectVideo(); void metadata(); }, 1000);
+  selectVideo(); sync?.setConnected(reply.connected);
+}
+function stop() {
+  active = false; observer?.disconnect(); clearInterval(timer); releaseVideo(); overlay?.remove(); overlay = null; statusText = null; startButton = null;
+}
+const receive = (message, sender, reply) => {
+  if (message.target !== 'player' || sender.id !== chrome.runtime.id) return;
+  if (message.type === 'discover') { const found = videos(), first = found[0]; reply({ count: found.length, score: first ? area(first) : 0, childFrames: childFrameLayout(document), initial: first ? { position: first.currentTime, duration: Number.isFinite(first.duration) ? first.duration : null, playing: !first.paused && !first.ended } : {} }); }
+  else if (message.type === 'start') { void start().then(() => reply({ ok: true })).catch(() => reply({ ok: false })); return true; }
+  else if (message.type === 'stop') { stop(); reply({ ok: true }); }
+  else if (message.type === 'connection') { sync?.setConnected(message.connected); if (message.connected) void sync?.refresh(); else status('Нет связи — восстанавливаем синхронизацию…'); }
+  else if (message.type === 'state' && active) {
+    if (message.state.source?.type !== 'extension' || !samePage(message.state.source.url, selectedPage)) { stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
+    state = message.state; sync?.accept(state);
+  }
+};
+chrome.runtime.onMessage.addListener(receive);
+function notifyDiscovery() {
+  const current = videos()[0];
+  const layout = JSON.stringify(childFrameLayout(document));
+  const layoutChanged = layout !== lastFrameLayout;
+  if (current === lastDiscovered && !layoutChanged) return;
+  lastDiscovered = current;
+  lastFrameLayout = layout;
+  void chrome.runtime.sendMessage({ target: 'background', type: layoutChanged ? 'player-layout' : 'player-ready', needsAttach: Boolean(current) && !active }).catch(() => {});
+}
+const discovery = new MutationObserver(() => {
+  if (!discoveryTimer) discoveryTimer = setTimeout(() => { discoveryTimer = null; notifyDiscovery(); }, 100);
+});
+discovery.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'src'] });
+function destroy() { stop(); discovery.disconnect(); clearTimeout(discoveryTimer); chrome.runtime.onMessage.removeListener(receive); window.removeEventListener('pagehide', destroy); }
+globalThis.__04agtogetherContent = { destroy };
+window.addEventListener('pagehide', destroy);
+// Navigation/reload: only a previously bound tab/frame can attach automatically.
+void engine({ type: 'attach' }).then(reply => { if (reply?.ok) void start(); }).catch(() => {});
+notifyDiscovery();

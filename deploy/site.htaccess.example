@@ -1,4 +1,4 @@
-# 04agtogether deployment v1
+# 04agtogether deployment v2
 # Replace both placeholders with paths verified on this Beget account.
 # The document root is 04agtogether/public_html; place this in 04agtogether/.htaccess,
 # matching the existing Beget ws-test configuration. The root app.js is a loader.
@@ -11,6 +11,11 @@ PassengerNodejs "__NODE_BIN__"
 PassengerAppEnv production
 PassengerStickySessions on
 PassengerStickySessionsCookieName _04agtogether_route
+
+# Rooms live in one Node process. Sticky sessions do NOT share rooms across
+# workers. Confirm Beget's per-site process limit before the first deployment.
+# Do not set PassengerMaxPoolSize/PassengerMaxInstancesPerApp here: global scope.
+# PassengerMaxInstances 1 is Enterprise-only; don't enable an unsupported directive.
 
 # Enable these rules only after checking the certificate for BOTH names.
 # ACME challenge files stay available without redirects.

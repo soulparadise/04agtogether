@@ -3,14 +3,15 @@ import { readFile, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-const mode = process.argv[2];
+let mode = process.argv[2];
+if (mode === 'rollback' && process.env.RELEASE_ID === 'static') mode = 'static';
 const sha = mode === 'rollback' ? process.env.RELEASE_ID : process.env.GITHUB_SHA;
 const host = process.env.BEGET_SSH_HOST;
 const port = process.env.BEGET_SSH_PORT || '22';
 const ip = process.env.BEGET_IP;
-if (!['deploy', 'rollback'].includes(mode) || !/^[a-f0-9]{40}$/.test(sha || '')) throw new Error('Invalid release');
+if (!['deploy', 'rollback', 'first', 'static'].includes(mode) || (mode !== 'static' && !/^[a-f0-9]{40}$/.test(sha || ''))) throw new Error('Invalid release');
 if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(host || '') || !/^\d{1,5}$/.test(port)) throw new Error('Missing or invalid SSH host/port');
-if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip || '')) throw new Error('Set BEGET_IP from the Beget panel');
+if (ip !== '45.130.41.94') throw new Error('BEGET_IP must match the verified 04agtogether address');
 if (!process.env.BEGET_SSH_KEY || !process.env.BEGET_SSH_KNOWN_HOSTS) throw new Error('Missing SSH secrets');
 const temporary = await mkdtemp(path.join(process.env.RUNNER_TEMP || tmpdir(), '04agtogether-ssh-'));
 const keyPath = path.join(temporary, 'key');
@@ -32,12 +33,12 @@ function run(command, args, input) {
   });
 }
 try {
-  if (mode === 'deploy') {
+  if (mode === 'deploy' || mode === 'first') {
     const archive = await readFile(`artifacts/${sha}.tgz`);
     const digest = createHash('sha256').update(archive).digest('hex');
     await run('ssh', [...options, '-p', port, destination, `upload ${sha} ${digest}`], archive);
   }
-  await run('ssh', [...options, '-p', port, destination, `activate ${sha} ${mode} ${ip}`]);
+  await run('ssh', [...options, '-p', port, destination, mode === 'static' ? 'restore-static' : `activate ${sha} ${mode} ${ip}`]);
 } finally {
   // Clear key material even if transfer or activation fails; the runner is ephemeral.
   await writeFile(keyPath, '', { mode: 0o600 });

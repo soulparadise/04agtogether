@@ -23,7 +23,8 @@ test('health and two concurrent polling sessions work; unknown API routes stay 4
     await connected;
     assert.equal(socket.io.engine.transport.name, 'polling');
     const reply = await socket.timeout(2000).emitWithAck('infra:ping');
-    assert.deepEqual(reply, { service: '04agtogether', transport: 'polling' });
+    assert.equal(reply.service, '04agtogether'); assert.equal(reply.transport, 'polling');
+    assert.match(reply.instance, /^[a-f0-9]{16}$/);
   }));
   assert.notEqual(sockets[0].id, sockets[1].id);
 });

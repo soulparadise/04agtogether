@@ -20,18 +20,19 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: pnpm smoke
-      - run: bash -n deploy/activate.sh && bash -n deploy/receiver.sh
+      - run: pnpm build:extension:production
+      - run: for script in deploy/*.sh; do bash -n "$script"; done
       - name: Package frontend and backend from the tested release
-        shell: bash
-        run: |
-          mkdir artifacts
-          tar -czf "artifacts/$GITHUB_SHA.tgz" -C release .
-          cd artifacts
-          sha256sum "$GITHUB_SHA.tgz" > "$GITHUB_SHA.tgz.sha256"
+        run: pnpm package:release
       - uses: actions/upload-artifact@v4
         with:
           name: beget-release
           path: artifacts/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension-production
+          path: extension/dist-production/
           retention-days: 14
   deploy:
     needs: check

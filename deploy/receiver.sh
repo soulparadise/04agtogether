@@ -7,6 +7,7 @@ home_dir=$(cd -- "$HOME" && pwd -P)
 root="$home_dir/04agtogether"
 [[ -d "$root" && ! -L "$root" && $(cd -- "$root" && pwd -P) == "$root" ]] || exit 2
 [[ $(cat "$root/.deployment-ready") == 'soulparadise/04agtogether' ]] || exit 2
+if [[ ${SSH_ORIGINAL_COMMAND:-} == restore-static ]]; then exec bash "$root/deploy/restore-static.sh"; fi
 IFS=' ' read -r verb sha argument_a argument_b extra <<< "${SSH_ORIGINAL_COMMAND:-}"
 [[ "$sha" =~ ^[a-f0-9]{40}$ && -z "$extra" ]] || exit 2
 case "$verb" in
@@ -23,8 +24,9 @@ case "$verb" in
     (cd -- "$root/incoming" && sha256sum -c "$sha.tgz.sha256")
     ;;
   activate)
-    [[ "$argument_a" == deploy || "$argument_a" == rollback ]] || exit 2
-    [[ "$argument_b" == '91.106.207.104' ]] || exit 2
+    [[ "$argument_a" == deploy || "$argument_a" == rollback || "$argument_a" == first ]] || exit 2
+    [[ "$argument_b" == '45.130.41.94' ]] || exit 2
+    if [[ "$argument_a" == first ]]; then exec bash "$root/deploy/first-release.sh" "$sha" "$argument_b"; fi
     exec bash "$root/deploy/activate.sh" "$sha" "$argument_a" "$argument_b"
     ;;
   *) echo 'Only 04agtogether upload/activate commands are allowed' >&2; exit 2 ;;

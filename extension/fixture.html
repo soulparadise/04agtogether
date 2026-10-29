@@ -1,0 +1,5 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>04agtogether · HTML5 extension test</title>
+<style>body{max-width:900px;margin:32px auto;padding:16px;background:#152019;color:#e7efdc;font:16px system-ui}video{width:100%}button{padding:12px;margin-top:12px}</style>
+<h1>Обычный HTML5-плеер</h1><p>Локальная тестовая страница другого origin. Видео загружается непосредственно с этой страницы, расширение синхронизирует только управление.</p>
+<video src="/media.mp4" controls playsinline preload="metadata"></video><button id="replace">Сменить видеоэлемент</button>
+<script>document.querySelector('#replace').onclick=()=>{const old=document.querySelector('video');const next=old.cloneNode(true);old.pause();old.replaceWith(next);};</script></html>

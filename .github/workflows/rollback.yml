@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Full 40-character SHA of a previously deployed release
+        description: Full SHA of a deployed release, or static to restore the original test page
         required: true
         type: string
 permissions:

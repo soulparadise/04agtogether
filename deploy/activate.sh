@@ -12,13 +12,17 @@ home_dir=$(cd -- "$HOME" && pwd -P)
 root="$home_dir/04agtogether"
 [[ -d "$root" && ! -L "$root" && $(cd -- "$root" && pwd -P) == "$root" ]] || exit 2
 [[ $(cat "$root/.deployment-ready") == 'soulparadise/04agtogether' ]] || exit 2
+source "$root/deploy/site-lib.sh"
+checked_site
+[[ "$beget_ip" == 45.130.41.94 ]] || exit 2
 for directory in incoming releases public_html; do
   [[ -d "$root/$directory" && ! -L "$root/$directory" ]] || exit 2
 done
 [[ ! -L "$root/.deploy.lock" ]] || exit 2
-exec 9>"$root/.deploy.lock"
+exec 9>>"$root/.deploy.lock"
 flock -n 9 || { echo 'Another deployment is active' >&2; exit 1; }
 grep -Fq "PassengerAppRoot \"$root\"" "$root/.htaccess" || exit 2
+release_runtime "$root/.htaccess"
 [[ -d "$root/tmp" && ! -L "$root/tmp" ]] || exit 2
 
 valid_target() {
@@ -31,6 +35,7 @@ if [[ -L "$root/current" ]]; then
 elif [[ -e "$root/current" ]]; then
   echo 'Refusing to replace a real directory' >&2; exit 2
 fi
+[[ -n "$old_target" ]] || { echo 'Use the explicit first-release procedure for the initial deployment' >&2; exit 2; }
 [[ ! -e "$root/previous" || -L "$root/previous" ]] || exit 2
 release_dir="$root/releases/$release_id"
 if [[ "$mode" == deploy ]]; then
@@ -39,12 +44,14 @@ if [[ "$mode" == deploy ]]; then
   [[ -f "$root/incoming/$release_id.tgz" && ! -L "$root/incoming/$release_id.tgz" ]] || exit 2
   [[ -f "$root/incoming/$release_id.tgz.sha256" && ! -L "$root/incoming/$release_id.tgz.sha256" ]] || exit 2
   (cd -- "$root/incoming" && sha256sum -c "$release_id.tgz.sha256")
+  validate_archive "$root/incoming/$release_id.tgz" release
   mkdir -- "$release_dir"
   tar --extract --gzip --file "$root/incoming/$release_id.tgz" --directory "$release_dir" --no-same-owner --no-same-permissions
 fi
 valid_target "releases/$release_id" || exit 2
 [[ -f "$release_dir/backend/app.js" && -f "$release_dir/frontend/index.html" ]] || exit 2
 grep -Fq "\"release\":\"$release_id\"" "$release_dir/release.json" || exit 2
+verify_release "$release_dir" "$release_id"
 [[ ! -L "$release_dir/backend" && ! -L "$release_dir/backend/tmp" ]] || exit 2
 mkdir -p -- "$release_dir/backend/tmp"
 
@@ -61,7 +68,7 @@ healthy() {
   for attempt in 1 2 3 4 5 6; do
     if curl --silent --show-error --fail --connect-timeout 5 --max-time 10 \
         --resolve "soulparadise.ru:443:$beget_ip" https://soulparadise.ru/api/health \
-        | grep -Fq "\"release\":\"$wanted\""; then return 0; fi
+        | grep -Fq "\"release\":\"$wanted\""; then live_release_check "$wanted" "$beget_ip"; return $?; fi
     sleep 2
   done
   return 1

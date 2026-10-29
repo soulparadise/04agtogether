@@ -1,0 +1,12 @@
+import { mkdir, readFile, readdir, copyFile, writeFile } from 'node:fs/promises';
+const root = new URL('../', import.meta.url);
+const nodeBin = process.argv.slice(2).filter(value => value !== '--')[0];
+if (nodeBin && (!/^\/[a-zA-Z0-9_./-]+\/node$/.test(nodeBin) || nodeBin.split('/').includes('..') || nodeBin.includes('__'))) throw new Error('Supply the absolute Node path verified on this hosting account');
+const target = new URL('artifacts/hosting/deploy/', root); await mkdir(target, { recursive: true });
+for (const name of await readdir(new URL('deploy/', root))) if (name.endsWith('.sh') || name === 'app.js') await copyFile(new URL('deploy/' + name, root), new URL(name, target));
+let config = await readFile(new URL('deploy/site.htaccess.example', root), 'utf8');
+config = config.replaceAll('__SITE_ROOT__', '/home/s/soulpab9/04agtogether');
+if (nodeBin) config = config.replaceAll('__NODE_BIN__', nodeBin);
+await writeFile(new URL(nodeBin ? 'site.htaccess.ready' : 'site.htaccess.template', target), config);
+await writeFile(new URL('artifacts/hosting/.deployment-ready', root), 'soulparadise/04agtogether\n');
+console.log(nodeBin ? 'Hosting files prepared; remote first-release still verifies the Node binary. Upload ONLY after user approval.' : 'Hosting scaffold prepared with an unresolved Node path. Verify Node 24 on Beget, then rerun with its absolute path; no ready config was generated.');
