@@ -1,7 +1,8 @@
 const { randomBytes, createHash, timingSafeEqual } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
-const { createPlayback, snapshotPlayback, applyPlayback } = require('./playback.cjs');
+const { createPlayback, snapshotPlayback, applyPlayback, selectionOf } = require('./playback.cjs');
 const { registerDevDiagnostics } = require('./dev-diagnostics.cjs');
+const { createRoomStore } = require('./room-store.cjs');
 
 const randomId = () => randomBytes(16).toString('hex');
 const secret = () => randomBytes(32).toString('hex');
@@ -11,9 +12,47 @@ const failure = (code, message) => ({ ok: false, error: { code, message } });
 
 function createRoomManager(io, {
   now = Date.now, clock = () => performance.now(), inactiveMs = 30 * 60_000, reconnectMs = 2 * 60_000,
-  sweepMs = 30_000, maxRooms = 200, maxParticipants = 20, developmentDiagnostics = false
+  sweepMs = 30_000, maxRooms = 200, maxParticipants = 20, developmentDiagnostics = false, stateDirectory
 } = {}) {
   const rooms = new Map();
+  const store = stateDirectory ? createRoomStore(stateDirectory) : null;
+  let checkpointAt = 0;
+  function persist() {
+    if (!store) return;
+    checkpointAt = now();
+    store.write({ savedAt: now(), rooms: [...rooms.values()].map(room => ({
+      ...room, ownerHash: room.ownerHash.toString('hex'),
+      participants: [...room.participants.values()].map(member => ({ ...member, sessionHash: member.sessionHash.toString('hex'), socketId: null })),
+      playback: { ...room.playback, basePosition: snapshotPlayback(room.playback, clock).position, updatedAt: 0 }
+    })) });
+  }
+  try {
+    const saved = store?.read();
+    if (saved) {
+      if (saved.rooms.length > maxRooms) throw new Error('Room checkpoint capacity mismatch');
+      const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+      const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+      for (const record of saved.rooms) {
+        if (!validId(record.id) || !validId(record.ownerId) || !validHash(record.ownerHash) || typeof record.title !== 'string' || record.title.length > 80 || !Array.isArray(record.participants) || record.participants.length > maxParticipants
+          || !Number.isSafeInteger(record.revision) || !Number.isFinite(record.playback?.basePosition) || !Number.isSafeInteger(record.playback.version)
+          || !['playing', 'paused', 'ended'].includes(record.playback.status)) throw new Error('Invalid room checkpoint');
+        const source = record.playback.source;
+        if (record.playback.basePosition < 0 || record.playback.basePosition > 604800 || record.playback.version < 0 || (record.playback.duration !== null && (!Number.isFinite(record.playback.duration) || record.playback.duration <= 0 || record.playback.duration > 604800))) throw new Error('Invalid checkpoint playback');
+        if (source) {
+          const url = new URL(source.url);
+          if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !['extension', 'html5'].includes(source.type) || !validId(record.playback.sourceId)
+            || (source.selection && (!selectionOf(source.selection) || !Number.isSafeInteger(source.selection.version) || source.selection.version < 1))) throw new Error('Invalid checkpoint source');
+        }
+        const participants = new Map(record.participants.map(member => {
+          if (!validId(member.id) || !validHash(member.sessionHash) || typeof member.nickname !== 'string' || member.nickname.length > 32) throw new Error('Invalid participant checkpoint');
+          return [member.id, { ...member, sessionHash: Buffer.from(member.sessionHash, 'hex'), socketId: null, disconnectedAt: member.disconnectedAt ?? saved.savedAt }];
+        }));
+        if (!participants.has(record.ownerId)) throw new Error('Missing room owner');
+        const playback = { ...record.playback, updatedAt: clock(), basePosition: Math.min(record.playback.duration ?? 604800, record.playback.basePosition + (record.playback.status === 'playing' ? Math.max(0, now() - saved.savedAt) / 1000 : 0)) };
+        rooms.set(record.id, { ...record, ownerHash: Buffer.from(record.ownerHash, 'hex'), participants, playback, emptySince: record.emptySince ?? saved.savedAt });
+      }
+    }
+  } catch (error) { store?.close(); throw error; }
   const nicknameOf = payload => {
     if (typeof payload?.nickname !== 'string') return null;
     const nickname = payload.nickname.trim().normalize('NFC');
@@ -30,6 +69,7 @@ function createRoomManager(io, {
   const channel = room => `room:${room.id}`;
   function publish(room) {
     room.revision++;
+    persist();
     io.to(channel(room)).emit('room:state', snapshot(room));
   }
   function markEmpty(room) {
@@ -78,9 +118,11 @@ function createRoomManager(io, {
   }
   function sweep() {
     const time = now();
+    let removed = false;
     for (const [id, room] of rooms) {
       if (room.emptySince !== null && time - room.emptySince >= inactiveMs) {
         rooms.delete(id);
+        removed = true;
         continue;
       }
       let changed = false;
@@ -92,6 +134,8 @@ function createRoomManager(io, {
       }
       if (changed) publish(room);
     }
+    if (removed) { persist(); console.info('Room cleanup: inactive rooms expired'); }
+    else if (store && time - checkpointAt >= 15_000 && [...rooms.values()].some(room => room.emptySince === null)) persist();
   }
   const timer = setInterval(sweep, sweepMs);
   timer.unref();
@@ -135,7 +179,7 @@ function createRoomManager(io, {
     });
     on('room:resume', payload => {
       const room = rooms.get(payload.roomId);
-      if (!room) return failure('ROOM_NOT_FOUND', 'Комната не найдена или уже закрыта. После перезапуска сервера комнаты не сохраняются.');
+      if (!room) { console.info('Room resume: confirmed missing room'); return failure('ROOM_NOT_FOUND', 'Сервер подтвердил: комната не найдена или истекло время её хранения.'); }
       const member = room.participants.get(payload.participantId);
       if (!member || !matches(payload.sessionToken, member.sessionHash)) return failure('SESSION_EXPIRED', 'Сессия истекла. Войдите в комнату заново.');
       if (member.id === room.ownerId && !matches(payload.ownerToken, room.ownerHash)) return failure('FORBIDDEN', 'Не удалось подтвердить права владельца.');
@@ -161,7 +205,7 @@ function createRoomManager(io, {
       if (!active) return failure('NOT_IN_ROOM', 'Сначала войдите в комнату.');
       return { ok: true, roomId: active.room.id, state: snapshotPlayback(active.room.playback, clock) };
     });
-    for (const action of ['source', 'play', 'pause', 'seek', 'metadata']) {
+    for (const action of ['source', 'selection', 'play', 'pause', 'seek', 'metadata']) {
       on(`playback:${action}`, payload => {
         const active = current(socket);
         if (!active) return failure('NOT_IN_ROOM', 'Сначала войдите в комнату.');
@@ -170,6 +214,7 @@ function createRoomManager(io, {
         if (!result.ok) return { ...result, state: snapshotPlayback(active.room.playback, clock) };
         active.room.playback = result.playback;
         active.room.revision++;
+        persist();
         const state = snapshotPlayback(active.room.playback, clock);
         io.to(channel(active.room)).emit('playback:state', { roomId: active.room.id, state });
         return { ok: true, roomId: active.room.id, state };
@@ -190,7 +235,10 @@ function createRoomManager(io, {
     });
     socket.on('disconnect', () => detach(socket));
   }
-  return { register, sweep, close: () => clearInterval(timer) };
+  let closed = false;
+  const close = () => { if (!closed) { clearInterval(timer); persist(); store?.close(); closed = true; process.removeListener('exit', close); } };
+  if (store) process.once('exit', close);
+  return { register, sweep, close };
 }
 
 module.exports = { createRoomManager };

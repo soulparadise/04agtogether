@@ -11,6 +11,14 @@ async function refresh() {
   $('room').textContent = state.title || '';
   $('connection').textContent = state.roomId ? `${state.connected ? 'На связи' : 'Восстанавливаем связь…'} · ${state.owner ? 'Owner · Владелец' : 'Viewer · Зритель'}` : 'Откройте фильм и пригласите друзей';
   if (state.roomId) $('player').textContent = state.player || 'Ищем плеер…';
+  const selection = state.room?.playback?.source?.selection;
+  $('selection').hidden = !state.roomId;
+  if (state.roomId) {
+    $('source-choice').textContent = `${selection?.player.label || 'Плеер не определён — укажи выбранный источник'} · Озвучка: ${selection?.voice?.label || 'не определена'}`;
+    $('owner-voice').hidden = !state.owner; $('confirm-choice').hidden = state.owner;
+    if (document.activeElement !== $('voice-label')) $('voice-label').value = selection?.voice?.label || '';
+    if (document.activeElement !== $('player-choice')) $('player-choice').value = selection?.player.id || '';
+  }
   $('nickname-row').hidden = Boolean(savedNickname || state.pending || state.roomId);
   const anotherFilm = tab?.url && !samePage(tab.url, state.room?.playback?.source?.url);
   $('watch').hidden = Boolean(state.roomId && !state.pending && !anotherFilm);
@@ -61,6 +69,12 @@ $('copy').addEventListener('click', async () => {
   catch { $('invitation').hidden = false; $('invitation').select(); }
 });
 $('disconnect').addEventListener('click', () => { void background({ type: 'disconnect' }).then(refresh).catch(fail); });
+$('save-voice').addEventListener('click', () => {
+  void background({ type: 'select-voice', player: $('player-choice').value, label: $('voice-label').value }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Не удалось обновить источник.'); return refresh(); }).catch(fail);
+});
+$('confirm-choice').addEventListener('click', () => {
+  void background({ type: 'confirm-selection' }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Сначала выбери источник на сайте.'); return refresh(); }).catch(fail);
+});
 void (async () => {
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try { webOrigin(tab?.url); } catch { tab = null; }

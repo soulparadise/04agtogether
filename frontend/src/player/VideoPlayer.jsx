@@ -11,7 +11,7 @@ const timeLabel = value => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export default function VideoPlayer({ roomId, initialState, socket, isOwner, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm, onExtensionDetected }) {
+export default function VideoPlayer({ roomId, initialState, socket, isOwner, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm, onExtensionDetected, extensionSourceStatus }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const syncRef = useRef(null);
@@ -110,7 +110,7 @@ export default function VideoPlayer({ roomId, initialState, socket, isOwner, own
   return <section className="video-panel">
     <div className="video-container" ref={containerRef}>
       <video ref={videoRef} className={shared.source?.type === 'html5' ? 'shared-video' : 'shared-video hidden-video'} aria-label="Общее видео" playsInline preload="metadata" controls={false} onContextMenu={event => event.preventDefault()} />
-      {shared.source?.type === 'extension' && <ExtensionRoomAccess source={shared.source} installed={extensionInstalled} busy={openingFilm} onOpen={onOpenFilm} onDetected={onExtensionDetected} />}
+      {shared.source?.type === 'extension' && <ExtensionRoomAccess source={shared.source} installed={extensionInstalled} busy={openingFilm} onOpen={onOpenFilm} onDetected={onExtensionDetected} status={extensionSourceStatus} />}
       {!shared.source && <div className="video-empty"><span className="screen-orbit" aria-hidden="true">▷</span><h2>Выбираем кино на вечер</h2><p>{isOwner ? 'Вставьте прямую ссылку на видео ниже.' : 'Владелец скоро добавит видео.'}</p></div>}
       {shared.source?.type === 'html5' && <div className="player-controls">
         <div className="timeline"><span>{timeLabel(seekDraft ?? position)}</span><input type="range" aria-label="Позиция видео" min="0" max={duration ?? shared.duration ?? 0} step="0.1" value={seekDraft ?? Math.min(position, duration ?? shared.duration ?? 0)} disabled={!isOwner || !connected || pending || !duration} onChange={event => setSeekDraft(Number(event.target.value))} onPointerUp={seek} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) seek(event); }} /><span>{timeLabel(duration ?? shared.duration)}</span></div>

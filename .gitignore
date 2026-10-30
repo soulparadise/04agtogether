@@ -18,6 +18,7 @@ extension/*.rar
 extension/*.zip
 artifacts/
 local-backups/
+state/
 *.p12
 *.pfx
 *.ppk

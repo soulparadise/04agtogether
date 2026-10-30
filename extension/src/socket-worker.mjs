@@ -16,6 +16,7 @@ async function handle(message) {
     persist(); return { ok: true, ...connection.status() };
   }
   if (message.type === 'status') return connection?.status() || { connected: false, player: 'Откройте страницу фильма.' };
+  if (message.type === 'selection') return connection?.select(message.selection) || { ok: false };
   if (message.type === 'bind') { if (!connection) throw new Error('Комната не подключена.'); connection.bind(message.binding); persist(); return { ok: true }; }
   if (message.type === 'disconnect') { connection?.disconnect(); connection = null; persist(); return { ok: true }; }
   if (message.type === 'reconnect') { connection?.start(); if (connection) await connection.whenReady(); return { ok: Boolean(connection) }; }

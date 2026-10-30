@@ -32,6 +32,7 @@ export default function App() {
   const [nickname, setNickname] = useState(savedNickname);
   const [extensionInstalled, setExtensionInstalled] = useState(false);
   const [extensionChecked, setExtensionChecked] = useState(false);
+  const [extensionSourceStatus, setExtensionSourceStatus] = useState('');
   const [managed, setManaged] = useState(false);
   const [openingFilm, setOpeningFilm] = useState(false);
   const [title, setTitle] = useState('');
@@ -60,6 +61,7 @@ export default function App() {
   }
   function acceptExtension(reply) {
     handoff.current = true; setManaged(true);
+    setExtensionSourceStatus(reply.connected === false ? 'Нет связи с расширением — переподключаемся…' : reply.player || 'Определяем источник…');
     setRoom(reply.room); setParticipantId(reply.participantId); setTitle(reply.room.title); setError('');
   }
   useEffect(() => {
@@ -185,7 +187,7 @@ export default function App() {
       {restoring && !inside ? <section className="join-card"><p className="eyebrow">ВОЗВРАЩАЕМСЯ</p><h1>Восстанавливаем сессию…</h1></section> : inside ? <>
         <div className="room-heading"><div><p className="eyebrow">ВАШ ОБЩИЙ КИНОЗАЛ</p><h1>{room.title}</h1><p className="room-id">Комната · {room.id}</p></div><button className="quiet" onClick={leave} disabled={!connected || busy}>Выйти из комнаты</button></div>
         <div className="room-layout">
-          <VideoPlayer key={room.id} roomId={room.id} initialState={room.playback} socket={socketRef.current} isOwner={isOwner && !managed} ownerToken={readSession(room.id)?.ownerToken} connected={connected && !managed} extensionInstalled={extensionInstalled} openingFilm={openingFilm} onOpenFilm={openFilm} onExtensionDetected={setExtensionInstalled} />
+          <VideoPlayer key={room.id} roomId={room.id} initialState={room.playback} socket={socketRef.current} isOwner={isOwner && !managed} ownerToken={readSession(room.id)?.ownerToken} connected={connected && !managed} extensionInstalled={extensionInstalled} openingFilm={openingFilm} onOpenFilm={openFilm} onExtensionDetected={setExtensionInstalled} extensionSourceStatus={extensionSourceStatus} />
           <aside className="room-sidebar">
             <section className="panel"><p className="eyebrow">ПРИГЛАСИТЬ ДРУЗЕЙ</p><label htmlFor="invite">Ссылка на комнату</label><div className="invite-row"><input id="invite" value={invitation} readOnly onFocus={event => event.target.select()} /><button className="icon-button" onClick={copyInvitation} aria-label="Копировать ссылку">{copied ? '✓' : '⧉'}</button></div><p className="hint" role="status">{copied ? 'Ссылка скопирована' : 'Достаточно ссылки — регистрация не нужна.'}</p></section>
             <section className="panel"><div className="section-heading"><h2>В комнате</h2><span className="count">{room.participants.filter(member => member.connected).length} онлайн</span></div><ul className="participants">{room.participants.map(member => <li key={member.id}><span className={`presence ${member.connected && connected ? 'present' : ''}`} /><div><strong>{member.nickname}{member.id === participantId && <small> · вы</small>}</strong><span className="member-status">{member.connected && connected ? 'На связи' : 'Не в сети'}</span></div><span className={`role ${member.role === 'owner' ? 'owner' : ''}`}>{member.role === 'owner' ? 'Владелец' : 'Зритель'}</span></li>)}</ul><p className="hint">{isOwner ? 'Вы управляете общим видео. Громкость у каждого своя.' : 'Общим просмотром управляет владелец комнаты.'}</p></section>

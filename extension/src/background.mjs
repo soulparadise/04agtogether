@@ -4,6 +4,7 @@ import { discoverPlayer, registerOrigins } from './player-tabs.mjs';
 
 let creating;
 const attaching = new Map();
+const attachAgain = new Set();
 const offscreenURL = chrome.runtime.getURL('offscreen.html');
 const popupURL = chrome.runtime.getURL('popup.html');
 const fail = error => ({ ok: false, error: { message: error.message || 'Не удалось подключить просмотр.' } });
@@ -36,7 +37,7 @@ async function requestConsent(pending) {
   return { ok: true, needsPermission: true };
 }
 async function attachTab(tabId, pageURL, onlyIfChanged = false) {
-  if (attaching.has(tabId)) return attaching.get(tabId);
+  if (attaching.has(tabId)) { attachAgain.add(tabId); return attaching.get(tabId); }
   const task = (async () => {
     const tab = await chrome.tabs.get(tabId);
     if (!samePage(tab.url, pageURL)) throw new Error('Страница фильма уже изменилась.');
@@ -44,13 +45,24 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
     await chrome.storage.session.set({ playerNeeds: found.frame?.count ? [] : found.neededOrigins });
     if (!found.frame) throw new Error('Плеер недоступен. Разрешите его iframe в расширении; закрытые и DRM-плееры не поддерживаются.');
     const session = await storedSession();
+    if (found.frame.selection) {
+      const status = await engine({ type: 'status' });
+      if (status.owner) {
+        const previous = status.room?.playback?.source?.selection;
+        const selection = { ...found.frame.selection, voice: found.frame.selection.voice || (previous?.player.id === found.frame.selection.player.id ? previous.voice : null) };
+        check(await engine({ type: 'selection', selection }));
+      }
+    }
     if (onlyIfChanged && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
     check(await engine({ type: 'bind', binding: { tabId, frameId: found.frame.frameId, pageURL } }));
     await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'start' }, { frameId: found.frame.frameId });
     return found;
   })();
   attaching.set(tabId, task);
-  try { return await task; } finally { attaching.delete(tabId); }
+  try { return await task; } finally {
+    attaching.delete(tabId);
+    if (attachAgain.delete(tabId)) queueMicrotask(() => { void attachTab(tabId, pageURL, true).catch(() => {}); });
+  }
 }
 async function openForViewer(pending) {
   const connected = check(await engine({ type: 'pair', pair: pending.pair }));
@@ -99,6 +111,9 @@ async function handleInternal(message, sender) {
   }
   if (message.type === 'deliver' && offscreen) {
     await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', ...message.payload }, { frameId: message.binding.frameId }).catch(() => {});
+    if (message.payload.type === 'state' && !message.payload.owner && message.payload.state.source?.selection) {
+      await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.state.source.selection }, { frameId: 0 }).catch(() => {});
+    }
     return { ok: true };
   }
   if (['player-ready', 'player-layout'].includes(message.type) && sender.tab) {
@@ -110,6 +125,24 @@ async function handleInternal(message, sender) {
     return { ok: true };
   }
   if (!popup) throw new Error('Недоверенный контекст расширения.');
+  if (message.type === 'select-voice') {
+    const status = await engine({ type: 'status' });
+    const selection = status.room?.playback?.source?.selection;
+    if (!status.owner || !['allplay', 'venom'].includes(message.player)) throw new Error('Укажи выбранный плеер владельца.');
+    const { voiceOption } = await import('./source-selection.mjs');
+    const player = { id: message.player, label: message.player === 'allplay' ? 'Плеер 2 · Allplay' : 'Full HD · player-venom' };
+    const reply = await engine({ type: 'selection', selection: { player, voice: voiceOption(message.label) } });
+    if (reply.ok) {
+      const session = await storedSession();
+      if (session?.binding) await chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection', selection: reply.state.source.selection }, { frameId: session.binding.frameId });
+    }
+    return reply;
+  }
+  if (message.type === 'confirm-selection') {
+    const session = await storedSession();
+    if (!session?.binding) throw new Error('Сначала откройте фильм.');
+    return chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection' }, { frameId: session.binding.frameId });
+  }
   if (message.type === 'popup-state') {
     const pending = await pendingLaunch();
     const { nickname } = await chrome.storage.local.get('nickname');
