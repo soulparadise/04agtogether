@@ -134,7 +134,7 @@ async function handleInternal(message, sender) {
     const reply = await engine({ type: 'selection', selection: { player, voice: voiceOption(message.label) } });
     if (reply.ok) {
       const session = await storedSession();
-      if (session?.binding) await chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection', selection: reply.state.source.selection }, { frameId: session.binding.frameId });
+      if (session?.binding) await chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection', selection: reply.state.source.selection, sourceId: reply.state.sourceId }, { frameId: session.binding.frameId });
     }
     return reply;
   }

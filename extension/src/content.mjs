@@ -47,7 +47,7 @@ function selectVideo() {
   if (!active) return;
   const desired = state?.source?.selection;
   const actual = readSelection(document);
-  const confirmed = confirmedVoice?.version === desired?.version;
+  const confirmed = confirmedVoice?.version === desired?.version && confirmedVoice?.sourceId === state?.sourceId;
   if (owner && desired && (actual ? actual.player.id !== desired.player.id : !confirmed)) { releaseVideo(true); status('Ожидаем новый плеер владельца…'); return; }
   if (!owner && desired) {
     const observed = confirmed ? { player: actual?.player || desired.player, voice: confirmedVoice.voice } : actual;
@@ -59,7 +59,7 @@ function selectVideo() {
       }
       return;
     }
-    if (waitingVideo && waitingVideo === videos()[0] && !readyAfterChange && confirmedVoice?.version !== desired.version) { status('Ожидаем готовность выбранной озвучки…'); return; }
+    if (waitingVideo && waitingVideo === videos()[0] && !readyAfterChange && !confirmed) { status('Ожидаем готовность выбранной озвучки…'); return; }
   }
   const selected = videos()[0];
   if (video?.isConnected && video === selected) return;
@@ -113,7 +113,7 @@ const receive = (message, sender, reply) => {
   else if (message.type === 'confirm-selection') {
     const actual = readSelection(document), desired = message.selection || state?.source?.selection;
     if (!desired || (actual && actual.player.id !== desired.player.id)) { reply({ ok: false, error: { message: 'Сначала выбери плеер владельца на странице фильма.' } }); return; }
-    confirmedVoice = { version: desired.version, voice: desired.voice }; waitingVideo = null;
+    confirmedVoice = { version: desired.version, voice: desired.voice, sourceId: message.sourceId || state.sourceId }; waitingVideo = null;
     selectVideo(); reply({ ok: true });
   }
   else if (message.type === 'connection') { sync?.setConnected(message.connected); if (message.connected) void sync?.refresh(); else status('Нет связи — восстанавливаем синхронизацию…'); }
@@ -121,7 +121,7 @@ const receive = (message, sender, reply) => {
     if (message.state.source?.type !== 'extension' || !samePage(message.state.source.url, selectedPage)) { stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
     const changed = state?.sourceId !== message.state.sourceId;
     state = message.state;
-    if (changed) { releaseVideo(true); if (confirmedVoice?.version !== state.source?.selection?.version) confirmedVoice = null; waitingVideo = null; selectVideo(); }
+    if (changed) { releaseVideo(true); if (confirmedVoice?.version !== state.source?.selection?.version || confirmedVoice?.sourceId !== state.sourceId) confirmedVoice = null; waitingVideo = null; selectVideo(); }
     else sync?.accept(state);
   }
 };
