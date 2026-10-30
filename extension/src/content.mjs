@@ -12,7 +12,11 @@ const bindings = [];
 let lastDiscovered, lastFrameLayout = '', discoveryTimer;
 let confirmedVoice, voiceAttempt, waitingVideo, readyAfterChange = false, lastSelection = '', targetSelection;
 const engine = payload => chrome.runtime.sendMessage({ target: 'engine', type: 'content', payload });
-function videos() { return [...document.querySelectorAll('video')].filter(v => area(v) > 0 && getComputedStyle(v).visibility !== 'hidden').sort((a, b) => area(b) - area(a)); }
+function videos() {
+  const found = [...document.querySelectorAll('video')].filter(v => area(v) > 0 && getComputedStyle(v).visibility !== 'hidden').sort((a, b) => area(b) - area(a));
+  // Allplay also creates an advertising video; never bind or control that one.
+  return document.querySelector('video.allplay__video') ? found.filter(v => v.matches('video.allplay__video')) : found;
+}
 function area(element) { const rect = element.getBoundingClientRect(); return Math.max(0, rect.width) * Math.max(0, rect.height); }
 function status(text) {
   if (statusText?.textContent === text) return;
