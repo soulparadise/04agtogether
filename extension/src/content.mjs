@@ -101,6 +101,9 @@ async function start() {
   const reply = await engine({ type: 'attach' });
   if (!reply?.ok) { panel(); status(reply?.error?.message || 'Сначала подключите эту вкладку в popup расширения.'); return; }
   stop(); active = true; owner = reply.owner; state = reply.state; selectedPage = state.source.url; panel();
+  // A newly opened viewer tab already has a cached source; it must not wait
+  // for another Owner command before applying the initial player choice.
+  if (!owner && state.source.selection) { targetSelection = state.source.selection; applyPlayer(document, targetSelection); }
   observer = new MutationObserver(selectVideo); observer.observe(document.documentElement, { childList: true, subtree: true });
   timer = setInterval(() => { selectVideo(); void metadata(); }, 1000);
   selectVideo(); sync?.setConnected(reply.connected);
