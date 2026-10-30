@@ -53,8 +53,8 @@ function selectVideo() {
     const observed = confirmed ? { player: actual?.player || desired.player, voice: confirmedVoice.voice } : actual;
     if (!matchesSelection(observed, desired)) {
       releaseVideo(true); status(selectionHint(actual, desired));
-      if (voiceAttempt !== desired.version) {
-        voiceAttempt = desired.version; waitingVideo = videos()[0]; readyAfterChange = false;
+      if (voiceAttempt !== state.sourceId) {
+        voiceAttempt = state.sourceId; waitingVideo = videos()[0]; readyAfterChange = false;
         applyVoice(document, desired);
       }
       return;
@@ -141,12 +141,13 @@ const onChoice = () => { notifyDiscovery(); selectVideo(); };
 const onReady = () => { readyAfterChange = true; selectVideo(); };
 document.addEventListener('change', onChoice, true);
 document.addEventListener('loadedmetadata', onReady, true);
+document.addEventListener('canplay', onReady, true);
 const discovery = new MutationObserver(() => {
   if (targetSelection) applyPlayer(document, targetSelection);
   if (!discoveryTimer) discoveryTimer = setTimeout(() => { discoveryTimer = null; notifyDiscovery(); }, 100);
 });
 discovery.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'src'] });
-function destroy() { stop(); discovery.disconnect(); clearTimeout(discoveryTimer); chrome.runtime.onMessage.removeListener(receive); document.removeEventListener('change', onChoice, true); document.removeEventListener('loadedmetadata', onReady, true); window.removeEventListener('pagehide', destroy); }
+function destroy() { stop(); discovery.disconnect(); clearTimeout(discoveryTimer); chrome.runtime.onMessage.removeListener(receive); document.removeEventListener('change', onChoice, true); document.removeEventListener('loadedmetadata', onReady, true); document.removeEventListener('canplay', onReady, true); window.removeEventListener('pagehide', destroy); }
 globalThis.__04agtogetherContent = { destroy };
 window.addEventListener('pagehide', destroy);
 // Navigation/reload: only a previously bound tab/frame can attach automatically.
