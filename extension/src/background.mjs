@@ -39,7 +39,7 @@ async function requestConsent(pending) {
 }
 async function attachTab(tabId, pageURL, onlyIfChanged = false) {
   if (attaching.has(tabId)) { attachAgain.add(tabId); return attaching.get(tabId); }
-  const task = (async () => {
+  const scan = async () => {
     const revision = discoveryRevision.get(tabId);
     const stale = () => revision !== discoveryRevision.get(tabId);
     const tab = await chrome.tabs.get(tabId);
@@ -58,18 +58,31 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
       }
     }
     if (stale()) return;
-    if (onlyIfChanged && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
+    if (onlyIfChanged && found.frame.active && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
+    if (session?.binding?.tabId === tabId && session.binding.frameId !== found.frame.frameId) {
+      await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'stop', pause: true }, { frameId: session.binding.frameId }).catch(() => {});
+      if (stale()) return;
+    }
     check(await engine({ type: 'bind', binding: { tabId, frameId: found.frame.frameId, pageURL } }));
     if (stale()) return;
-    await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'start' }, { frameId: found.frame.frameId });
+    check(await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'start' }, { frameId: found.frame.frameId }));
     const current = await engine({ type: 'status' });
     if (!stale() && !current.owner) await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'source-target', selection: current.room?.playback?.source?.selection || null }, { frameId: 0 }).catch(() => {});
+    return found;
+  };
+  const task = (async () => {
+    let found;
+    do {
+      attachAgain.delete(tabId);
+      try { found = await scan(); }
+      catch (error) { if (!attachAgain.has(tabId)) throw error; }
+      onlyIfChanged = true;
+    } while (attachAgain.delete(tabId));
     return found;
   })();
   attaching.set(tabId, task);
   try { return await task; } finally {
     attaching.delete(tabId);
-    if (attachAgain.delete(tabId)) queueMicrotask(() => { void attachTab(tabId, pageURL, true).catch(() => {}); });
   }
 }
 async function openForViewer(pending) {
@@ -154,7 +167,10 @@ async function handleInternal(message, sender) {
   if (message.type === 'confirm-selection') {
     const session = await storedSession();
     if (!session?.binding) throw new Error('Сначала откройте фильм.');
-    return chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection' }, { frameId: session.binding.frameId });
+    await attachTab(session.binding.tabId, session.binding.pageURL, true);
+    const current = await storedSession(), status = await engine({ type: 'status' });
+    if (!current?.binding) throw new Error('Плеер ещё подключается. Повторите подтверждение.');
+    return chrome.tabs.sendMessage(current.binding.tabId, { target: 'player', type: 'confirm-selection', selection: status.room?.playback?.source?.selection, sourceId: status.room?.playback?.sourceId }, { frameId: current.binding.frameId });
   }
   if (message.type === 'popup-state') {
     const pending = await pendingLaunch();

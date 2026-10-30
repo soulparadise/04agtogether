@@ -73,7 +73,8 @@ $('save-voice').addEventListener('click', () => {
   void background({ type: 'select-voice', player: $('player-choice').value, label: $('voice-label').value }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Не удалось обновить источник.'); return refresh(); }).catch(fail);
 });
 $('confirm-choice').addEventListener('click', () => {
-  void background({ type: 'confirm-selection' }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Сначала выбери источник на сайте.'); return refresh(); }).catch(fail);
+  $('error').textContent = '';
+  void background({ type: 'confirm-selection' }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Сначала выбери источник на сайте.'); $('error').textContent = ''; return refresh(); }).catch(fail);
 });
 void (async () => {
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

@@ -49,7 +49,8 @@ test('background hands off automatically, survives worker reload and releases th
   const previousChrome = globalThis.chrome;
   const roomId = 'a'.repeat(32), token = 'b'.repeat(64), filmURL = 'http://127.0.0.1:5174/';
   const store = {}, listeners = {}, tabs = new Map([[1, { id: 1, url: `http://127.0.0.1:5173/room/${roomId}` }]]);
-  let grants = false, active = null, calls = 0, openedConsent = 0, nextTab = 10, starts = 0;
+  let grants = false, active = null, calls = 0, openedConsent = 0, nextTab = 10, starts = 0, selectedFrame = 0, interruptNextBind = false;
+  const activeFrames = new Set();
   const delivered = [];
   const event = name => ({ addListener: listener => { listeners[name] = listener; } });
   const publicStatus = () => active ? { connected: true, appOrigin: active.pair.origin, roomId, participantId: active.pair.participantId, owner: false, room: { id: roomId, playback: { source: { type: 'extension', url: filmURL } } } } : { connected: false };
@@ -59,16 +60,29 @@ test('background hands off automatically, survives worker reload and releases th
         calls++;
         if (message.type === 'status') return publicStatus();
         if (message.type === 'pair') { active = { pair: message.pair }; store.session = active; return { ok: true, ...publicStatus() }; }
-        if (message.type === 'bind') { active.binding = message.binding; return { ok: true }; }
+        if (message.type === 'bind') {
+          activeFrames.delete(active.binding?.frameId); active.binding = message.binding;
+          if (interruptNextBind) {
+            interruptNextBind = false;
+            listeners.internal({ target: 'background', type: 'player-layout' }, { id: 'test-extension', tab: tabs.get(10), frameId: 0 }, () => {});
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
+          return { ok: true };
+        }
         if (message.type === 'disconnect') { active = null; delete store.session; return { ok: true }; }
         return { ok: true };
       } },
     storage: { session: { get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, store[key]])), set: async values => Object.assign(store, values), remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete store[key]; } }, local: { get: async () => ({ nickname: 'Viewer' }) } },
     permissions: { contains: async () => grants, getAll: async () => ({ origins: [] }), onAdded: event('added') },
     scripting: { getRegisteredContentScripts: async () => [], registerContentScripts: async () => {}, executeScript: async () => {} },
-    webNavigation: { getAllFrames: async () => [{ frameId: 0, url: filmURL }] },
+    webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: filmURL }, { frameId: 1, parentFrameId: 0, url: 'about:blank' }] },
     tabs: { get: async id => { if (!tabs.has(id)) throw new Error('Closed'); return tabs.get(id); }, create: async ({ url }) => { const tab = { id: nextTab++, url }; tabs.set(tab.id, tab); return tab; },
-      update: async (id, patch) => Object.assign(tabs.get(id), patch), sendMessage: async (_id, message) => { delivered.push(message); if (message.type === 'start') starts++; return { count: 1, score: 100 }; }, onRemoved: event('removed'), onUpdated: event('updated') },
+      update: async (id, patch) => Object.assign(tabs.get(id), patch), sendMessage: async (_id, message, { frameId } = {}) => {
+        delivered.push(message);
+        if (message.type === 'start') { starts++; activeFrames.add(frameId); return { ok: true }; }
+        if (message.type === 'confirm-selection') return { ok: activeFrames.has(frameId) };
+        return { count: frameId === selectedFrame ? 1 : 0, score: 100, active: activeFrames.has(frameId), childFrames: frameId === 0 ? [{ url: 'about:blank', visible: selectedFrame === 1 }] : [] };
+      }, onRemoved: event('removed'), onUpdated: event('updated') },
     action: { openPopup: async () => { openedConsent++; } }
   };
   t.after(() => { globalThis.chrome = previousChrome; });
@@ -94,6 +108,15 @@ test('background hands off automatically, survives worker reload and releases th
   assert.ok(starts > 0, 'Reloading a bound film automatically starts its content controller');
   assert.ok(!JSON.stringify(delivered).includes(token), 'Content messages contain no room credential');
   assert.equal(store.session.binding.pageURL, filmURL);
+  selectedFrame = 1; interruptNextBind = true;
+  await send('internal', { target: 'background', type: 'player-layout' }, { id: 'test-extension', tab: tabs.get(10), frameId: 0 });
+  for (let i = 0; i < 30 && !activeFrames.has(1); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(activeFrames.has(1), 'A bind interrupted by parent layout must still start the new frame');
+  for (const frameId of [0, 1, 0]) {
+    selectedFrame = frameId; activeFrames.clear();
+    assert.equal((await send('internal', { target: 'background', type: 'confirm-selection' }, popup)).ok, true, 'Every manual confirmation rediscovers and starts the actual frame');
+    assert.equal(store.session.binding.frameId, frameId);
+  }
   assert.equal((await send('internal', { target: 'background', type: 'player-ready' }, { id: 'test-extension', tab: { id: 11, url: filmURL }, frameId: 0 })).ok, false);
   listeners.removed(10);
   for (let i = 0; i < 30 && store.session; i++) await new Promise(resolve => setTimeout(resolve, 10));

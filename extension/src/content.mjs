@@ -10,8 +10,9 @@ globalThis.__04agtogetherContent?.destroy();
 let sync, adapter, video, observer, timer, overlay, statusText, startButton, active = false, owner = false, state, metadataSource, selectedPage;
 const bindings = [];
 let lastDiscovered, lastFrameLayout = '', discoveryTimer;
-let confirmedVoice, voiceAttempt, waitingVideo, readyAfterChange = false, lastSelection = '', targetSelection;
+let voiceAttempt, lastSelection = '', targetSelection;
 let lifecycle = 0;
+const technicalPauses = new WeakSet(), ignoredPauseEvents = new WeakSet();
 const engine = payload => chrome.runtime.sendMessage({ target: 'engine', type: 'content', payload });
 function videos() {
   const found = [...document.querySelectorAll('video')].filter(v => area(v) > 0 && getComputedStyle(v).visibility !== 'hidden').sort((a, b) => area(b) - area(a));
@@ -29,6 +30,9 @@ function playbackStatus(ownAdapter, text) {
   if (ownAdapter.video.error) {
     const explanations = { 1: 'загрузка прервана', 2: 'сетевая ошибка загрузки', 3: 'ошибка декодирования', 4: 'формат или источник не поддерживается' };
     status(`Ошибка видео сайта: ${explanations[ownAdapter.video.error.code] || `код ${ownAdapter.video.error.code}`}. Проверьте воспроизведение на сайте или выберите другой источник.`);
+  } else if (!ownAdapter.isReady() && (ownAdapter.needsGesture || (ownAdapter.warmupAt && performance.now() - ownAdapter.warmupAt > 3000))) {
+    startButton.hidden = false;
+    status(ownAdapter.needsGesture ? 'Браузер не разрешил автоматический запуск. Нажмите «Начать просмотр».' : 'Плеер ещё не загрузил видео. Нажмите «Начать просмотр», чтобы запустить загрузку на сайте.');
   } else status(state?.source?.selection && !readSelection(document)?.voice ? `${text} · Озвучка не определена` : text);
 }
 function panel() {
@@ -41,7 +45,7 @@ function panel() {
   statusText = document.createElement('p'); statusText.style.margin = '6px 0';
   startButton = document.createElement('button'); startButton.textContent = 'Начать просмотр'; startButton.hidden = true;
   startButton.style.pointerEvents = 'auto';
-  startButton.addEventListener('click', () => sync?.startViewing());
+  startButton.addEventListener('click', () => { if (adapter?.isReady()) sync?.startViewing(); else initializeVideo(true); });
   box.append(title, statusText, startButton); root.append(box); document.documentElement.append(overlay);
   placePanel();
 }
@@ -61,8 +65,26 @@ function placePanel() {
 function releaseVideo(pause = false) {
   if (startButton) startButton.hidden = true;
   bindings.splice(0).forEach(([element, event, listener]) => element.removeEventListener(event, listener));
-  if (pause && video && !video.paused) video.pause();
+  if (pause && video && !video.paused) { technicalPauses.add(video); video.pause(); }
   sync?.destroy(); sync = null; adapter = null; video = null; metadataSource = null;
+}
+function initializeVideo(retry = false) {
+  const current = adapter;
+  if (!current || current.isReady() || (!retry && state?.status !== 'playing') || (!retry && current.warmupAt)) return;
+  // Allplay's HLS loader is idle until its normal Play control is activated.
+  // This only primes the current video; PlaybackSync still decides position/status.
+  if (!current.video.matches('video.allplay__video')) return;
+  current.warmupAt = performance.now(); current.needsGesture = false;
+  const controls = [...document.querySelectorAll('button.allplay__control--overlaid[data-allplay="play"]')].filter(button => area(button) > 0);
+  current.mark('play');
+  if (current.video.paused && controls.length === 1) controls[0].click();
+  let play;
+  try { play = current.play(); } catch (error) { play = Promise.reject(error); }
+  Promise.resolve(play).catch(error => {
+    if (adapter !== current) return;
+    if (error.name === 'NotAllowedError') { current.needsGesture = true; playbackStatus(current, 'Ожидаем разрешение браузера'); }
+    else if (error.name !== 'AbortError') playbackStatus(current, 'Не удалось запустить видео сайта. Попробуйте штатную кнопку Play или другой источник.');
+  });
 }
 async function metadata() {
   const duration = adapter?.getDuration();
@@ -75,22 +97,19 @@ function selectVideo() {
   if (!active) return;
   const desired = state?.source?.selection;
   const actual = readSelection(document);
-  const confirmed = confirmedVoice?.version === desired?.version && confirmedVoice?.sourceId === state?.sourceId;
-  if (owner && desired && !confirmed && !matchesSelection(actual, desired)) { releaseVideo(true); status('Определяем выбранные плеер и озвучку владельца…'); return; }
+  if (owner && desired && !matchesSelection(actual, desired)) { releaseVideo(true); status('Определяем выбранные плеер и озвучку владельца…'); return; }
   if (!owner && desired) {
-    const observed = confirmed ? { player: actual?.player || desired.player, voice: confirmedVoice.voice } : actual;
-    if (!matchesSelection(observed, desired)) {
+    if (!matchesSelection(actual, desired)) {
       releaseVideo(true); status(selectionHint(actual, desired));
       if (voiceAttempt !== state.sourceId) {
-        voiceAttempt = state.sourceId; waitingVideo = videos()[0]; readyAfterChange = false;
-        if (!applyVoice(document, desired)) waitingVideo = null;
+        voiceAttempt = state.sourceId;
+        applyVoice(document, desired);
       }
       return;
     }
-    if (waitingVideo && waitingVideo === videos()[0] && !readyAfterChange && !confirmed) { status('Ожидаем готовность выбранной озвучки…'); return; }
   }
   const selected = videos()[0];
-  if (video?.isConnected && video === selected) { placePanel(); return; }
+  if (video?.isConnected && video === selected) { placePanel(); initializeVideo(); return; }
   if (!selected) { releaseVideo(); placePanel(); status('Ожидаем загрузку выбранного плеера. Если он не появится, запустите его на странице или проверьте разрешение iframe в расширении.'); return; }
   releaseVideo(true); video = selected; adapter = new ForeignVideoAdapter(video);
   placePanel();
@@ -107,8 +126,8 @@ function selectVideo() {
     onBlocked: blocked => { if (startButton) startButton.hidden = !blocked; }, onMetadata: () => void metadata()
   });
   for (const [event, action] of Object.entries({ play: 'play', pause: 'pause', seeked: 'seek' })) {
-    const listener = async () => {
-      if (ownAdapter.consume(event) || !active || adapter !== ownAdapter || !ownAdapter.video.isConnected || videos()[0] !== ownAdapter.video || (owner && state?.source?.selection && !matchesSelection(readSelection(document), state.source.selection))) return;
+    const listener = async domEvent => {
+      if (ignoredPauseEvents.has(domEvent) || ownAdapter.consume(event) || !active || adapter !== ownAdapter || !ownAdapter.video.isConnected || videos()[0] !== ownAdapter.video || ownAdapter.video.readyState < 1 || (event === 'pause' && !ownAdapter.video.paused) || (owner && state?.source?.selection && !matchesSelection(readSelection(document), state.source.selection))) return;
       if (!owner) { sync?.apply(true); return; }
       // Do not let an old server snapshot undo an in-progress local gesture.
       ownAdapter.intentPending++;
@@ -123,13 +142,16 @@ function selectVideo() {
     video.addEventListener(event, listener); bindings.push([video, event, listener]);
   }
   if (state) sync.accept(state);
-  void sync.refresh(); void metadata();
+  void sync.refresh(); initializeVideo(); void metadata();
 }
 async function start() {
   const attempt = ++lifecycle;
   const reply = await engine({ type: 'attach' });
   if (attempt !== lifecycle) return;
   if (!reply?.ok) { panel(); status(reply?.error?.message || 'Сначала подключите эту вкладку в popup расширения.'); return; }
+  if (active && samePage(selectedPage, reply.state.source?.url)) {
+    acceptState(reply.state); selectVideo(); sync?.setConnected(reply.connected); void sync?.refresh(); return;
+  }
   stop(); active = true; owner = reply.owner; state = reply.state; selectedPage = state.source.url; panel();
   // A newly opened viewer tab already has a cached source; it must not wait
   // for another Owner command before applying the initial player choice.
@@ -139,29 +161,47 @@ async function start() {
   selectVideo(); sync?.setConnected(reply.connected);
 }
 function stop() {
-  lifecycle++; confirmedVoice = null; voiceAttempt = null; waitingVideo = null; readyAfterChange = false; targetSelection = null;
+  lifecycle++; voiceAttempt = null; targetSelection = null;
   active = false; observer?.disconnect(); clearInterval(timer); releaseVideo(); overlay?.remove(); overlay = null; statusText = null; startButton = null;
+}
+function acceptState(next) {
+  if (state && (next.version < state.version || (next.version === state.version && next.serverNow < state.serverNow))) return;
+  if (next.source?.type !== 'extension' || !samePage(next.source.url, selectedPage)) { stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
+  const changed = state?.sourceId !== next.sourceId;
+  state = next;
+  if (changed) { releaseVideo(true); voiceAttempt = null; selectVideo(); }
+  else if (sync) sync.accept(state);
+  else selectVideo();
+}
+async function confirmSelection(message) {
+  if (!active) return { ok: false, error: { message: 'Новый плеер ещё подключается. Повторите подтверждение.' } };
+  const latest = await engine({ type: 'get' });
+  if (!latest?.ok) return latest || { ok: false };
+  acceptState(latest.state);
+  if (!active || (message.sourceId && message.sourceId !== state.sourceId)) return { ok: false, error: { message: 'Владелец снова изменил источник. Проверьте новый выбор и повторите подтверждение.' } };
+  const actual = readSelection(document), desired = state.source?.selection;
+  if (!desired || !matchesSelection(actual, desired)) {
+    const hint = desired ? selectionHint(actual, desired) : 'Выбор владельца пока не определён.';
+    status(hint); return { ok: false, error: { message: hint } };
+  }
+  // A click never fabricates a matching voice. Each attempt checks the live DOM.
+  voiceAttempt = null; selectVideo();
+  if (!sync || video !== videos()[0]) return { ok: false, error: { message: 'Выбранный плеер ещё не создал доступное видео. Запустите его на сайте и повторите подтверждение.' } };
+  initializeVideo(true); void sync.refresh();
+  return { ok: true, pending: !adapter.isReady() || Boolean(adapter.needsGesture) };
 }
 const receive = (message, sender, reply) => {
   if (message.target !== 'player' || sender.id !== chrome.runtime.id) return;
-  if (message.type === 'discover') { const found = videos(), first = found[0], selection = readSelection(document); reply({ count: found.length, score: first ? area(first) : 0, childFrames: childFrameLayout(document), selection, initial: first ? { position: first.currentTime, duration: Number.isFinite(first.duration) ? first.duration : null, playing: !first.paused && !first.ended, selection } : {} }); }
-  else if (message.type === 'start') { void start().then(() => reply({ ok: true })).catch(() => reply({ ok: false })); return true; }
+  if (message.type === 'discover') { const found = videos(), first = found[0], selection = readSelection(document); reply({ active, sourceId: state?.sourceId, syncAttached: Boolean(sync && first === video), ready: first?.readyState ?? null, count: found.length, score: first ? area(first) : 0, childFrames: childFrameLayout(document), selection, initial: first ? { position: first.currentTime, duration: Number.isFinite(first.duration) ? first.duration : null, playing: !first.paused && !first.ended, selection } : {} }); }
+  else if (message.type === 'start') { void start().then(() => reply({ ok: active })).catch(() => reply({ ok: false })); return true; }
   else if (message.type === 'stop') { releaseVideo(Boolean(message.pause)); stop(); reply({ ok: true }); }
   else if (message.type === 'source-target') { if (!message.selection || !targetSelection || message.selection.version >= targetSelection.version) { targetSelection = message.selection; applyPlayer(document, targetSelection); } reply({ ok: true }); }
   else if (message.type === 'confirm-selection') {
-    const actual = readSelection(document), desired = message.selection || state?.source?.selection;
-    if (!desired || (actual && actual.player.id !== desired.player.id)) { reply({ ok: false, error: { message: 'Сначала выбери плеер владельца на странице фильма.' } }); return; }
-    confirmedVoice = { version: desired.version, voice: desired.voice, sourceId: message.sourceId || state.sourceId }; waitingVideo = null;
-    selectVideo(); reply({ ok: true });
+    void confirmSelection(message).then(reply).catch(() => reply({ ok: false, error: { message: 'Не удалось проверить плеер. Повторите попытку.' } })); return true;
   }
   else if (message.type === 'connection') { sync?.setConnected(message.connected); if (message.connected) void sync?.refresh(); else status('Нет связи — восстанавливаем синхронизацию…'); }
   else if (message.type === 'state' && active) {
-    if (state && (message.state.version < state.version || (message.state.version === state.version && message.state.serverNow < state.serverNow))) return;
-    if (message.state.source?.type !== 'extension' || !samePage(message.state.source.url, selectedPage)) { stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
-    const changed = state?.sourceId !== message.state.sourceId;
-    state = message.state;
-    if (changed) { releaseVideo(true); if (confirmedVoice?.version !== state.source?.selection?.version || confirmedVoice?.sourceId !== state.sourceId) confirmedVoice = null; waitingVideo = null; selectVideo(); }
-    else sync?.accept(state);
+    acceptState(message.state);
   }
 };
 chrome.runtime.onMessage.addListener(receive);
@@ -177,8 +217,10 @@ function notifyDiscovery() {
   void chrome.runtime.sendMessage({ target: 'background', type: layoutChanged ? 'player-layout' : 'player-ready', needsAttach: Boolean(current) && !active }).catch(() => {});
 }
 const onChoice = () => { notifyDiscovery(); selectVideo(); };
-const onReady = event => { if (event.target !== videos()[0]) return; readyAfterChange = true; selectVideo(); };
+const onTechnicalPause = event => { if (technicalPauses.delete(event.target)) ignoredPauseEvents.add(event); };
+const onReady = event => { if (event.target !== videos()[0]) return; selectVideo(); };
 document.addEventListener('change', onChoice, true);
+document.addEventListener('pause', onTechnicalPause, true);
 document.addEventListener('loadedmetadata', onReady, true);
 document.addEventListener('canplay', onReady, true);
 const discovery = new MutationObserver(() => {
@@ -187,7 +229,7 @@ const discovery = new MutationObserver(() => {
 });
 discovery.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'src'] });
 window.addEventListener('resize', placePanel); document.addEventListener('scroll', placePanel, true); document.addEventListener('fullscreenchange', placePanel);
-function destroy() { stop(); discovery.disconnect(); clearTimeout(discoveryTimer); chrome.runtime.onMessage.removeListener(receive); document.removeEventListener('change', onChoice, true); document.removeEventListener('loadedmetadata', onReady, true); document.removeEventListener('canplay', onReady, true); window.removeEventListener('resize', placePanel); document.removeEventListener('scroll', placePanel, true); document.removeEventListener('fullscreenchange', placePanel); window.removeEventListener('pagehide', destroy); }
+function destroy() { stop(); discovery.disconnect(); clearTimeout(discoveryTimer); chrome.runtime.onMessage.removeListener(receive); document.removeEventListener('change', onChoice, true); document.removeEventListener('pause', onTechnicalPause, true); document.removeEventListener('loadedmetadata', onReady, true); document.removeEventListener('canplay', onReady, true); window.removeEventListener('resize', placePanel); document.removeEventListener('scroll', placePanel, true); document.removeEventListener('fullscreenchange', placePanel); window.removeEventListener('pagehide', destroy); }
 globalThis.__04agtogetherContent = { destroy };
 window.addEventListener('pagehide', destroy);
 // Navigation/reload: only a previously bound tab/frame can attach automatically.
