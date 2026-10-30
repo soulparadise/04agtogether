@@ -111,8 +111,8 @@ async function handleInternal(message, sender) {
   }
   if (message.type === 'deliver' && offscreen) {
     await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', ...message.payload }, { frameId: message.binding.frameId }).catch(() => {});
-    if (message.payload.type === 'state' && !message.payload.owner && message.payload.state.source?.selection) {
-      await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.state.source.selection }, { frameId: 0 }).catch(() => {});
+    if (message.payload.type === 'stop' || (message.payload.type === 'state' && !message.payload.owner)) {
+      await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.type === 'state' ? message.payload.state.source?.selection || null : null }, { frameId: 0 }).catch(() => {});
     }
     return { ok: true };
   }
