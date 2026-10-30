@@ -64,6 +64,14 @@ h1 { font-size: clamp(38px, 4.4vw, 66px); font-weight: 500; line-height: 1.13; l
 .role.owner { background: #c7e49d12; color: #c7e49d; border: 1px solid #c7e49d22; border-radius: 5px; padding: 5px 7px; }
 .rename input { font-size: 12px; }
 .rename button { width: 100%; margin-top: 10px; }
+.entry-choice { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.entry-choice [aria-pressed="true"] { border-color: #c7e49d; color: #d9efbb; }
+.room-access { margin-top: 18px; border-top: 1px solid #ffffff12; padding-top: 10px; }
+.room-access summary { cursor: pointer; color: #b9ce9f; font-size: 12px; margin: 12px 0; }
+.room-access input { margin: 8px 0 14px; }
+.room-access .check-label { display: flex; align-items: center; gap: 8px; }
+.room-access .check-label input { width: auto; margin: 0; }
+.room-access .quiet { width: 100%; }
 .message { border: 1px solid #657b46; border-radius: 10px; color: #c7d4b4; background: #23331c; padding: 14px 18px; font-size: 13px; line-height: 1.7; margin-bottom: 24px; }
 .message.error { border-color: #895d4a; color: #f1c5b0; background: #32231c; }
 .text-button { padding: 12px 0; background: transparent; color: #afc391; font-size: 12px; }

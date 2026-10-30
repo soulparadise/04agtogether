@@ -11,7 +11,7 @@ const timeLabel = value => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export default function VideoPlayer({ roomId, initialState, socket, isOwner, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm, onExtensionDetected, extensionSourceStatus }) {
+export default function VideoPlayer({ roomId, initialState, socket, isOwner, onChooseSource, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm, onExtensionDetected, extensionSourceStatus }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const syncRef = useRef(null);
@@ -92,7 +92,14 @@ export default function VideoPlayer({ roomId, initialState, socket, isOwner, own
 
   async function userCommand(action, payload) {
     setPending(true);
-    try { await command(action, payload); }
+    try {
+      if (action === 'source' && onChooseSource) {
+        const reply = await onChooseSource(payload);
+        if (!reply?.ok) throw new Error(reply?.error?.message || 'Не удалось выбрать страницу.');
+        if (reply.state) syncRef.current?.accept(reply.state);
+        setError('');
+      } else await command(action, payload);
+    } catch (problem) { setError(problem.message); }
     finally { setPending(false); }
   }
   function seek(event) {
@@ -125,6 +132,6 @@ export default function VideoPlayer({ roomId, initialState, socket, isOwner, own
     <p className="sync-status" role="status">{shared.source?.type === 'extension' ? 'Extension · управляйте видео на его исходной странице' : connected ? status : 'Нет связи — восстанавливаем синхронизацию…'}</p>
     {error && <p className="message error" role="alert">{error}</p>}
     {DevDiagnostics && new URLSearchParams(location.search).get('diagnostics') === '1' && <Suspense fallback={null}><DevDiagnostics sync={syncRef.current} socket={socket} roomId={roomId} /></Suspense>}
-    {isOwner && <form className="source-form panel" onSubmit={event => { event.preventDefault(); void userCommand('source', { url, mode }); }}><label htmlFor="player-mode">Режим просмотра</label><select id="player-mode" value={mode} onChange={event => setMode(event.target.value)}><option value="embedded">Embedded — прямой видеофайл</option><option value="extension">Extension — страница с видео</option></select><label htmlFor="video-url">{mode === 'extension' ? 'Ссылка на страницу с видео' : 'Прямая ссылка на видео'}</label><div className="source-input"><input id="video-url" type="url" placeholder={mode === 'extension' ? 'https://…/film' : 'https://…/film.mp4'} value={url} onChange={event => setUrl(event.target.value)} required maxLength={4096} /><button className="primary" disabled={!connected || pending}>{mode === 'extension' ? 'Выбрать страницу' : 'Загрузить видео'}</button></div><p className="hint">{mode === 'extension' ? 'Видео загружается самим сайтом. Для просмотра требуется локально установленное расширение 04agtogether.' : 'Прямые MP4, WebM и другие форматы вашего браузера.'}</p></form>}
+    {(isOwner || onChooseSource) && <form className="source-form panel" onSubmit={event => { event.preventDefault(); void userCommand('source', { url, mode }); }}><label htmlFor="player-mode">Режим просмотра</label><select id="player-mode" value={mode} onChange={event => setMode(event.target.value)}><option value="embedded" disabled={Boolean(onChooseSource)}>Embedded — прямой видеофайл</option><option value="extension">Extension — страница с видео</option></select><label htmlFor="video-url">{mode === 'extension' ? 'Ссылка на страницу с видео' : 'Прямая ссылка на видео'}</label><div className="source-input"><input id="video-url" type="url" placeholder={mode === 'extension' ? 'https://…/film' : 'https://…/film.mp4'} value={url} onChange={event => setUrl(event.target.value)} required maxLength={4096} /><button className="primary" disabled={(!connected && !onChooseSource) || pending}>{mode === 'extension' ? 'Выбрать страницу' : 'Загрузить видео'}</button></div><p className="hint">{mode === 'extension' ? 'Видео загружается самим сайтом. Для просмотра требуется локально установленное расширение 04agtogether.' : 'Прямые MP4, WebM и другие форматы вашего браузера.'}</p></form>}
   </section>;
 }

@@ -3,6 +3,7 @@ const { performance } = require('node:perf_hooks');
 const { createPlayback, snapshotPlayback, applyPlayback, selectionOf } = require('./playback.cjs');
 const { registerDevDiagnostics } = require('./dev-diagnostics.cjs');
 const { createRoomStore } = require('./room-store.cjs');
+const { loginName, validPassword, validLogin, passwordHash, passwordMatches, attemptLimiter } = require('./room-access.cjs');
 
 const randomId = () => randomBytes(16).toString('hex');
 const secret = () => randomBytes(32).toString('hex');
@@ -15,6 +16,8 @@ function createRoomManager(io, {
   sweepMs = 30_000, maxRooms = 200, maxParticipants = 20, developmentDiagnostics = false, stateDirectory
 } = {}) {
   const rooms = new Map();
+  const limiter = attemptLimiter(now);
+  const dummyLogin = { salt: randomBytes(16).toString('hex'), hash: randomBytes(64).toString('hex') };
   const store = stateDirectory ? createRoomStore(stateDirectory) : null;
   let checkpointAt = 0;
   function persist() {
@@ -33,6 +36,7 @@ function createRoomManager(io, {
       const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
       const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
       for (const record of saved.rooms) {
+        if (record.login != null && !validLogin(record.login)) throw new Error('Invalid private room access checkpoint');
         if (!validId(record.id) || !validId(record.ownerId) || !validHash(record.ownerHash) || typeof record.title !== 'string' || record.title.length > 80 || !Array.isArray(record.participants) || record.participants.length > maxParticipants
           || !Number.isSafeInteger(record.revision) || !Number.isFinite(record.playback?.basePosition) || !Number.isSafeInteger(record.playback.version)
           || !['playing', 'paused', 'ended'].includes(record.playback.status)) throw new Error('Invalid room checkpoint');
@@ -51,6 +55,8 @@ function createRoomManager(io, {
         const playback = { ...record.playback, updatedAt: clock(), basePosition: Math.min(record.playback.duration ?? 604800, record.playback.basePosition + (record.playback.status === 'playing' ? Math.max(0, now() - saved.savedAt) / 1000 : 0)) };
         rooms.set(record.id, { ...record, ownerHash: Buffer.from(record.ownerHash, 'hex'), participants, playback, emptySince: record.emptySince ?? saved.savedAt });
       }
+      const names = [...rooms.values()].filter(room => room.login).map(room => room.login.key);
+      if (new Set(names).size !== names.length) throw new Error('Duplicate private room login');
     }
   } catch (error) { store?.close(); throw error; }
   const nicknameOf = payload => {
@@ -60,6 +66,7 @@ function createRoomManager(io, {
   };
   const snapshot = room => ({
     id: room.id, title: room.title, revision: room.revision, ownerId: room.ownerId,
+    loginName: room.login?.name || null,
     playback: snapshotPlayback(room.playback, clock),
     participants: [...room.participants.values()].map(member => ({
       id: member.id, nickname: member.nickname,
@@ -236,9 +243,55 @@ function createRoomManager(io, {
     socket.on('disconnect', () => detach(socket));
   }
   let closed = false;
+  const badLogin = () => failure('INVALID_LOGIN', 'Комната не найдена или неверный пароль');
+  const loginRoom = key => [...rooms.values()].find(room => room.login?.key === key);
+  function authorizedOwner(payload) {
+    const room = rooms.get(payload?.roomId), member = room?.participants.get(payload?.participantId);
+    return room && member?.id === room.ownerId && matches(payload.sessionToken, member.sessionHash) && matches(payload.ownerToken, room.ownerHash) ? room : null;
+  }
+  async function configureLogin(payload, address) {
+    sweep();
+    const room = authorizedOwner(payload);
+    if (!room) return failure('FORBIDDEN', 'Изменять вход в комнату может только её владелец.');
+    if (payload.enabled === false) { room.login = null; publish(room); return { ok: true, room: snapshot(room) }; }
+    const name = loginName(payload.name);
+    if (!name) return failure('INVALID_NAME', 'Имя для входа: от 3 до 64 символов без управляющих знаков.');
+    if (loginRoom(name.key) && loginRoom(name.key) !== room) return failure('NAME_TAKEN', 'Это имя уже занято. Выберите другое.');
+    const replace = payload.password !== undefined && payload.password !== '';
+    if ((!room.login || replace) && !validPassword(payload.password)) return failure('INVALID_PASSWORD', 'Пароль должен содержать от 8 до 128 символов.');
+    const release = limiter.enter(address);
+    if (!release) return failure('RATE_LIMIT', 'Слишком много попыток. Повторите через несколько минут.');
+    try {
+      const credentials = replace || !room.login ? await passwordHash(payload.password) : room.login;
+      sweep();
+      if (authorizedOwner(payload) !== room) return failure('FORBIDDEN', 'Комната больше недоступна.');
+      if (loginRoom(name.key) && loginRoom(name.key) !== room) return failure('NAME_TAKEN', 'Это имя уже занято. Выберите другое.');
+      room.login = { ...name, algorithm: credentials.algorithm, salt: credentials.salt, hash: credentials.hash };
+      publish(room); return { ok: true, room: snapshot(room) };
+    } finally { release(); }
+  }
+  async function joinByLogin(payload, address) {
+    const release = limiter.enter(address);
+    if (!release) return failure('RATE_LIMIT', 'Слишком много попыток. Повторите через несколько минут.');
+    try {
+      sweep();
+      const name = loginName(payload?.name), room = name && loginRoom(name.key), login = room?.login;
+      const password = validPassword(payload?.password) ? payload.password : '';
+      const matched = await passwordMatches(password, login || dummyLogin);
+      sweep();
+      if (!room || !password || !matched || rooms.get(room.id) !== room || room.login !== login) return badLogin();
+      const nickname = nicknameOf(payload);
+      if (!nickname) return failure('INVALID_NICKNAME', 'Укажите никнейм от 1 до 32 символов.');
+      if (room.participants.size >= maxParticipants) return failure('PARTICIPANT_LIMIT', 'В комнате уже 20 участников.');
+      const sessionToken = secret();
+      const member = { id: randomId(), nickname, sessionHash: hash(sessionToken), socketId: null, disconnectedAt: now() };
+      room.participants.set(member.id, member); publish(room);
+      return { ok: true, room: snapshot(room), participantId: member.id, sessionToken };
+    } finally { release(); }
+  }
   const close = () => { if (!closed) { clearInterval(timer); persist(); store?.close(); closed = true; process.removeListener('exit', close); } };
   if (store) process.once('exit', close);
-  return { register, sweep, close };
+  return { register, sweep, close, configureLogin, joinByLogin };
 }
 
 module.exports = { createRoomManager };

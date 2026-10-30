@@ -125,5 +125,23 @@ export class RoomConnection {
     this.queue = task.catch(() => {}); return task;
   }
   status() { return { roomId: this.pair.roomId, appOrigin: this.pair.origin, invitation: `${this.pair.origin}/room/${this.pair.roomId}`, title: this.title || '', connected: this.connected, owner: Boolean(this.owner), player: this.videoStatus || 'Ожидаем плеер…', error: this.error || '', bound: Boolean(this.binding), room: this.room ? { ...this.room, playback: this.state } : null, participantId: this.pair.participantId }; }
+  async configureAccess(settings) {
+    if (!this.owner || !this.connected) return { ok: false, error: { message: 'Нужны права владельца и связь с комнатой.' } };
+    const app = new URL(this.pair.origin);
+    if (app.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(app.hostname)) throw new Error('Пароль можно передавать только через HTTPS.');
+    const response = await fetch(this.pair.origin + '/api/rooms/access', { method: 'POST', redirect: 'error', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, ...this.pair }) });
+    const reply = await response.json();
+    if (reply.ok) { this.room = reply.room; this.accept(reply.room.playback); }
+    return reply;
+  }
+  async setSource(options) {
+    if (!this.owner || !this.connected) return { ok: false, error: { message: 'Источник меняет только владелец.' } };
+    const task = this.queue.then(async () => {
+      const reply = await this.request('playback:source', { ...options, expectedVersion: this.state.version, ownerToken: this.pair.ownerToken });
+      if (reply.state) this.accept(reply.state);
+      return publicPlaybackReply(reply);
+    });
+    this.queue = task.catch(() => {}); return task;
+  }
   disconnect() { clearTimeout(this.resumeTimer); this.connected = false; this.deliver({ type: 'stop' }); this.binding = null; this.socket.disconnect(); }
 }

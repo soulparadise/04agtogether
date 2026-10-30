@@ -166,7 +166,7 @@ function stop() {
 }
 function acceptState(next) {
   if (state && (next.version < state.version || (next.version === state.version && next.serverNow < state.serverNow))) return;
-  if (next.source?.type !== 'extension' || !samePage(next.source.url, selectedPage)) { stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
+  if (next.source?.type !== 'extension' || !samePage(next.source.url, selectedPage)) { releaseVideo(true); stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
   const changed = state?.sourceId !== next.sourceId;
   state = next;
   if (changed) { releaseVideo(true); voiceAttempt = null; selectVideo(); }

@@ -86,16 +86,29 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
   }
 }
 async function openForViewer(pending) {
+  const verifyContext = async () => {
+    if (!Number.isInteger(pending.appTabId)) throw new Error('Откройте нужную комнату на сайте и нажмите «Открыть фильм» ещё раз.');
+    const tab = await chrome.tabs.get(pending.appTabId);
+    trustedWebContext({ url: tab.url, tab, frameId: 0 }, pending.pair.roomId);
+    if (new URL(tab.url).origin !== pending.pair.origin) throw new Error('Страница комнаты изменилась. Откройте фильм из нужной комнаты ещё раз.');
+  };
+  await verifyContext();
+  const previous = await storedSession();
+  if (previous?.binding) await chrome.tabs.sendMessage(previous.binding.tabId, { target: 'player', type: 'stop', pause: true }, { frameId: previous.binding.frameId }).catch(() => {});
   const connected = check(await engine({ type: 'pair', pair: pending.pair }));
+  if (connected.room?.id !== pending.pair.roomId) throw new Error('Не удалось подтвердить нужную комнату. Откройте приглашение заново.');
   const nickname = connected.room?.participants?.find(member => member.id === connected.participantId)?.nickname;
   if (nickname) await chrome.storage.local.set({ nickname });
   const source = connected.room?.playback?.source;
   if (source?.type !== 'extension') throw new Error('В этой комнате сейчас используется встроенный плеер.');
   webOrigin(source.url);
   if (!await permissionsFor(pending.pair.origin, source.url)) return requestConsent({ ...pending, filmURL: source.url });
+  await verifyContext();
   // Bind a specific newly opened tab before navigation. Other tabs, even with
   // the same film URL, never inherit this session automatically.
   const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
+  try { await verifyContext(); }
+  catch (error) { await chrome.tabs.remove(tab.id).catch(() => {}); throw error; }
   check(await engine({ type: 'bind', binding: { tabId: tab.id, frameId: 0, pageURL: source.url, awaitingNavigation: true } }));
   await chrome.storage.session.remove('pending');
   await chrome.tabs.update(tab.id, { url: source.url });
@@ -199,7 +212,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
   void (async () => {
-    const context = trustedWebContext(sender, ['open-film', 'room-status', 'leave-room'].includes(message.type) ? message.roomId : undefined);
+    const context = trustedWebContext(sender, ['open-film', 'room-status', 'leave-room', 'room-access', 'room-source'].includes(message.type) ? message.roomId : undefined);
+    if (['open-film', 'room-access', 'room-source'].includes(message.type)) {
+      const tab = await chrome.tabs.get(context.tabId);
+      trustedWebContext({ ...sender, url: tab.url }, message.roomId);
+      if (new URL(tab.url).origin !== context.origin) throw new Error('Страница комнаты изменилась. Откройте её заново.');
+    }
     if (message.type === 'ping') return { ok: true };
     if (message.type === 'profile') return { ok: true, nickname: (await chrome.storage.local.get('nickname')).nickname || '' };
     if (message.type === 'room-status') {
@@ -211,16 +229,22 @@ chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
       if (status.appOrigin !== context.origin || status.roomId !== message.roomId) throw new Error('Эта комната не подключена в расширении.');
       return disconnect();
     }
+    if (['room-access', 'room-source'].includes(message.type)) {
+      const status = await engine({ type: 'status' });
+      if (!status.owner || status.appOrigin !== context.origin || status.roomId !== message.roomId) throw new Error('Подключите эту комнату в расширении с правами владельца.');
+      return engine(message.type === 'room-access' ? { type: 'configure-access', settings: message.settings } : { type: 'set-source', options: { mode: message.mode, url: message.url } });
+    }
     if (message.type !== 'open-film') throw new Error('Неизвестное сообщение.');
     const stored = await storedSession();
     if (stored?.pair.origin === context.origin && stored.pair.roomId === message.roomId && stored.binding) {
       const tab = await chrome.tabs.get(stored.binding.tabId).catch(() => null);
-      if (tab && samePage(tab.url, stored.binding.pageURL)) { await chrome.tabs.update(tab.id, { active: true }); return { ok: true }; }
+      const status = await engine({ type: 'status' });
+      if (tab && status.connected && status.appOrigin === context.origin && status.roomId === message.roomId && samePage(status.room?.playback?.source?.url, message.filmURL) && samePage(message.filmURL, stored.binding.pageURL) && samePage(tab.url, stored.binding.pageURL)) { await chrome.tabs.update(tab.id, { active: true }); return { ok: true }; }
     }
     const session = message.session || (stored?.pair.origin === context.origin && stored.pair.roomId === message.roomId ? stored.pair : null);
     const pair = validatePair({ ...session, roomId: message.roomId, origin: context.origin });
     webOrigin(message.filmURL);
-    const pending = { pair, filmURL: message.filmURL };
+    const pending = { pair, filmURL: message.filmURL, appTabId: context.tabId };
     if (!await permissionsFor(pair.origin, pending.filmURL)) return requestConsent(pending);
     return openForViewer(pending);
   })().then(reply).catch(error => reply(fail(error))); return true;

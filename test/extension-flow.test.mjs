@@ -49,11 +49,12 @@ test('background hands off automatically, survives worker reload and releases th
   const previousChrome = globalThis.chrome;
   const roomId = 'a'.repeat(32), token = 'b'.repeat(64), filmURL = 'http://127.0.0.1:5174/';
   const store = {}, listeners = {}, tabs = new Map([[1, { id: 1, url: `http://127.0.0.1:5173/room/${roomId}` }]]);
+  let currentFilm = filmURL;
   let grants = false, active = null, calls = 0, openedConsent = 0, nextTab = 10, starts = 0, selectedFrame = 0, interruptNextBind = false;
   const activeFrames = new Set();
   const delivered = [];
   const event = name => ({ addListener: listener => { listeners[name] = listener; } });
-  const publicStatus = () => active ? { connected: true, appOrigin: active.pair.origin, roomId, participantId: active.pair.participantId, owner: false, room: { id: roomId, playback: { source: { type: 'extension', url: filmURL } } } } : { connected: false };
+  const publicStatus = () => active ? { connected: true, appOrigin: active.pair.origin, roomId: active.pair.roomId, participantId: active.pair.participantId, owner: Boolean(active.pair.ownerToken), room: { id: active.pair.roomId, playback: { source: { type: 'extension', url: currentFilm } } } } : { connected: false };
   globalThis.chrome = {
     runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}`, getContexts: async () => [{}],
       onMessage: event('internal'), onMessageExternal: event('external'), sendMessage: async message => {
@@ -118,7 +119,18 @@ test('background hands off automatically, survives worker reload and releases th
     assert.equal(store.session.binding.frameId, frameId);
   }
   assert.equal((await send('internal', { target: 'background', type: 'player-ready' }, { id: 'test-extension', tab: { id: 11, url: filmURL }, frameId: 0 })).ok, false);
-  listeners.removed(10);
+  const siteRoomId = 'd'.repeat(32);
+  tabs.get(1).url = `http://127.0.0.1:5173/room/${siteRoomId}`;
+  const ownerSender = { ...sender, url: tabs.get(1).url };
+  const ownerOpen = { ...message, roomId: siteRoomId, session: { participantId: 'e'.repeat(32), sessionToken: token, ownerToken: 'f'.repeat(64) } };
+  assert.equal((await send('external', ownerOpen, ownerSender)).ok, true);
+  assert.equal(active.pair.roomId, siteRoomId); assert.equal(active.pair.ownerToken, ownerOpen.session.ownerToken);
+  assert.equal(store.session.binding.tabId, 11, 'A different site-created room does not reuse the old room tab');
+  currentFilm = filmURL + 'second-film';
+  assert.equal((await send('external', { ...ownerOpen, filmURL: currentFilm }, ownerSender)).ok, true);
+  assert.equal(store.session.binding.pageURL, currentFilm); assert.equal(store.session.binding.tabId, 12);
+  assert.ok([...tabs.values()].every(tab => !tab.url.includes(token) && !tab.url.includes(ownerOpen.session.ownerToken)), 'Film URLs never contain room credentials');
+  listeners.removed(12);
   for (let i = 0; i < 30 && store.session; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.session, undefined);
 });
