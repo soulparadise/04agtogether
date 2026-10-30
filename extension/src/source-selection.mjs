@@ -10,11 +10,46 @@ function voiceSelect(document) {
     select.getAttribute('aria-label'), ...[...(select.labels || [])].map(label => label.textContent)
   ].join(' ')));
 }
+function lordfilmControls(document) {
+  if (!['sg.lordfilm5.pro', 'mg.lordfilm.md'].includes(document.location?.hostname)) return null;
+  const boxes = [...document.querySelectorAll('.fplayer.tabs-box')].map(box => {
+    const tabs = [...box.querySelectorAll('.tabs-sel > span')];
+    const full = tabs.filter(tab => normalized(tab.textContent) === 'Full HD');
+    const second = tabs.filter(tab => normalized(tab.textContent) === 'Плеер 2' && (tab.getAttribute('onclick') || '').includes('#player-2') && (tab.getAttribute('onclick') || '').includes('https://cdn.lordfilm64.com/'));
+    return full.length === 1 && second.length === 1 && box.querySelector('#player-2') && box.querySelector('.tabs-b > iframe:not([src])') ? { full: full[0], second: second[0] } : null;
+  }).filter(Boolean);
+  return boxes.length === 1 ? boxes[0] : null;
+}
+function customVoices(document, player) {
+  if (player.id === 'allplay') {
+    const items = [...document.querySelectorAll('button.select__drop-item[data-id]')].filter(n => /^t\d+\|[A-Z0-9-]+$/.test(n.getAttribute('data-id') || ''));
+    const roots = new Set(items.map(n => n.closest('.select')));
+    if (roots.size !== 1 || roots.has(null)) return null;
+    return {
+      items, head: [...roots][0].querySelector('button.select__item'),
+      active: node => node.classList.contains('active'),
+      option: node => ({ id: `allplay:${node.getAttribute('data-id').replace('|', ':')}`, label: normalized([...node.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ')) })
+    };
+  }
+  if (player.id === 'venom') {
+    const roots = [...document.querySelectorAll('.dropdown_2c1.hideOnMini_wxn')];
+    if (roots.length !== 1) return null;
+    return { items: [...roots[0].querySelectorAll('.menu_2sa > .item_2mH')], head: roots[0].querySelector('.head_1gl'), active: node => node.classList.contains('active_1Rh'), option: node => voiceOption(node.textContent) };
+  }
+  return null;
+}
 export function readSelection(document) {
   // Only signals actually observed in the two supported player families.
   const player = document.querySelector('video.allplay__video') ? { id: 'allplay', label: 'Плеер 2 · Allplay' }
     : document.querySelector('video') && [...document.querySelectorAll('script[src]')].some(script => /\/player-venom@[^/]+\/dist\/player\.js/.test(script.src)) ? { id: 'venom', label: 'Full HD · player-venom' } : null;
-  if (!player) return null;
+  if (!player) {
+    const controls = lordfilmControls(document);
+    if (controls?.full.classList.contains('current')) return { player: { id: 'venom', label: 'Full HD · player-venom' }, voice: null };
+    if (controls?.second.classList.contains('current')) return { player: { id: 'allplay', label: 'Плеер 2 · Allplay' }, voice: null };
+    return null;
+  }
+  const custom = customVoices(document, player), current = custom?.items.filter(custom.active);
+  if (current?.length === 1) return { player, voice: custom.option(current[0]) };
   const control = voiceSelect(document);
   const option = control?.selectedOptions?.[0];
   return { player, voice: option && !option.disabled && option.value ? voiceOption(option.textContent) : null };
@@ -30,6 +65,12 @@ export function selectionHint(actual, desired) {
 export function applyVoice(document, desired) {
   const actual = readSelection(document);
   if (!actual || actual.player.id !== desired.player.id || !desired.voice || matchesSelection(actual, desired)) return false;
+  const custom = customVoices(document, actual.player);
+  if (custom) {
+    const items = custom.items.filter(node => normalized(custom.option(node).label).toLowerCase() === normalized(desired.voice.label).toLowerCase());
+    if (items.length !== 1 || !custom.head) return false;
+    custom.head.click(); items[0].click(); return true;
+  }
   const control = voiceSelect(document);
   const matches = [...(control?.options || [])].filter(option => normalized(option.textContent).toLowerCase() === normalized(desired.voice.label).toLowerCase());
   if (matches.length !== 1 || matches[0].disabled) return false;
@@ -38,6 +79,12 @@ export function applyVoice(document, desired) {
   return true;
 }
 export function applyPlayer(document, desired) {
+  const controls = lordfilmControls(document);
+  if (controls && ['allplay', 'venom'].includes(desired?.player?.id)) {
+    const tab = desired.player.id === 'allplay' ? controls.second : controls.full;
+    if (tab.classList.contains('current') || tab.getBoundingClientRect().width <= 1) return false;
+    tab.click(); return true;
+  }
   // No guesses by tab index or clicks on arbitrary advertising links.
   if (desired?.player?.id !== 'allplay') return false;
   const tabs = [...document.querySelectorAll('[role="tab"][aria-controls]')].filter(tab => {
