@@ -26,7 +26,7 @@ export async function discoverPlayer(chrome, tabId) {
     const layout = inspected.get(frame.parentFrameId)?.childFrames;
     const matches = layout?.filter(child => samePage(child.url, frame.url)
       || (['about:blank', 'about:srcdoc'].includes(child.url) && parent && samePage(frame.url, parent.url)));
-    const shown = visible.get(frame.parentFrameId) !== false && (!matches?.length || matches.some(child => child.visible));
+    const shown = visible.get(frame.parentFrameId) !== false && (frame.frameId === 0 || !layout || (matches.length > 0 && matches.every(child => child.visible)));
     visible.set(frame.frameId, shown);
     if (!shown) continue;
     const origin = framePermissionOrigin(frame, byId);
@@ -43,8 +43,18 @@ export async function discoverPlayer(chrome, tabId) {
       candidates.push({ frameId: frame.frameId, ...result });
     } catch { /* Restricted/sandboxed frames stay inaccessible. */ }
   }
+  // Confirm the parent tab again after asynchronous frame inspection. A result
+  // from the frame that was hidden/replaced meanwhile is never authoritative.
+  const initialTop = inspected.get(0);
+  let top = initialTop;
+  if (initialTop) {
+    try { top = await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'discover' }, { frameId: 0 }); }
+    catch { return { frame: null, neededOrigins: [...neededOrigins], changed: true }; }
+    if (JSON.stringify(top.selection) !== JSON.stringify(initialTop.selection) || JSON.stringify(top.childFrames) !== JSON.stringify(initialTop.childFrames)) return { frame: null, neededOrigins: [...neededOrigins], changed: true };
+  }
   candidates.sort((a, b) => (b.score || 0) - (a.score || 0) || (b.count || 0) - (a.count || 0));
-  return { frame: candidates.find(item => item.count > 0) || candidates.find(item => item.frameId === 0), neededOrigins: [...neededOrigins] };
+  const selectedPlayer = top?.selection?.player.id;
+  return { frame: candidates.find(item => item.count > 0 && (!selectedPlayer || item.selection?.player.id === selectedPlayer)) || candidates.find(item => item.frameId === 0), neededOrigins: [...neededOrigins] };
 }
 
 export async function registerOrigins(chrome, origins) {

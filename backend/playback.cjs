@@ -6,7 +6,7 @@ const validTime = value => typeof value === 'number' && Number.isFinite(value) &
 function selectionOf(value) {
   const option = value => value && typeof value === 'object' && typeof value.id === 'string' && /^[a-zA-Z0-9_.:-]{1,96}$/.test(value.id)
     && typeof value.label === 'string' && value.label.trim().length >= 1 && value.label.length <= 96 && !/[\u0000-\u001f\u007f]/.test(value.label) ? { id: value.id, label: value.label.trim() } : null;
-  if (!value || typeof value !== 'object' || !['allplay', 'venom'].includes(value.player?.id)) return null;
+  if (!value || typeof value !== 'object' || !['allplay', 'venom', 'playerjs'].includes(value.player?.id)) return null;
   const player = option(value.player), voice = value.voice === null ? null : option(value.voice);
   return player && (value.voice === null || voice) ? { player, voice } : null;
 }

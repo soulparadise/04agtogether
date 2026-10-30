@@ -18,7 +18,7 @@ test('src-less movie frame inherits a granted parent; other-origin nested frames
   };
   const result = await discoverPlayer(chrome, 7);
   assert.equal(result.frame.frameId, 1);
-  assert.deepEqual(probed, [0, 1]);
+  assert.deepEqual(probed, [0, 1, 0]);
   assert.deepEqual(result.neededOrigins, ['https://api.stiven-king.com']);
   await registerOrigins(chrome, ['https://mg.lordfilm.md/*']);
   assert.equal(registered[0].matchOriginAsFallback, true);
@@ -53,7 +53,7 @@ test('player tab switch excludes hidden old video and asks only for the visible 
   result = await discoverPlayer(chrome, 7);
   assert.equal(result.frame.frameId, 0); assert.equal(result.frame.count, 0);
   assert.deepEqual(result.neededOrigins, ['https://cdn.lordfilm64.com']);
-  assert.deepEqual(probed, [0]);
+  assert.deepEqual(probed, [0, 0]);
   cdnGranted = true;
   result = await discoverPlayer(chrome, 7);
   assert.equal(result.frame.frameId, 2);

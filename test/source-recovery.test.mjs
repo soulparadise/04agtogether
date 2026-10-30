@@ -71,6 +71,26 @@ test('timeout during resume remains reconnecting; a confirmed retry restores the
   finally { connection.disconnect(); }
 });
 
+test('latest queued owner choice survives a sourceId change from an in-flight selection', async () => {
+  const connection = new RoomConnection({ origin: 'http://127.0.0.1:5173', roomId: 'a'.repeat(32), participantId: 'b'.repeat(32), sessionToken: 'c'.repeat(64) });
+  connection.owner = true; connection.connected = true;
+  connection.state = { source: { type: 'extension', url: 'https://example.com/film' }, sourceId: 'initial', version: 1, serverNow: 1 };
+  let finish, calls = [];
+  connection.request = async (_event, payload) => {
+    calls.push(payload);
+    if (calls.length === 1) await new Promise(resolve => { finish = resolve; });
+    return { ok: true, state: { ...connection.state, source: { ...connection.state.source, selection: payload.selection }, sourceId: `source-${calls.length}`, version: connection.state.version + 1, serverNow: calls.length + 1 } };
+  };
+  try {
+    const choice = label => ({ player: { id: 'allplay', label: 'Плеер 2' }, voice: voiceOption(label) });
+    const first = connection.select(choice('A')); await Promise.resolve();
+    const obsolete = connection.select(choice('B')), latest = connection.select(choice('C'));
+    finish(); await Promise.all([first, obsolete, latest]);
+    assert.deepEqual(calls.map(call => call.selection.voice.label), ['A', 'C']);
+    assert.equal(calls[1].sourceId, 'source-1'); assert.equal(connection.state.source.selection.voice.label, 'C');
+  } finally { connection.disconnect(); }
+});
+
 test('source adapter compares labels, never option indexes, and refuses unidentified tabs or ambiguous voices', () => {
   const desired = { player: { id: 'allplay', label: 'Плеер 2' }, voice: voiceOption('Дубляж') };
   assert.equal(matchesSelection({ ...desired, voice: voiceOption('Другая') }, desired), false);
@@ -86,18 +106,19 @@ test('source adapter compares labels, never option indexes, and refuses unidenti
 
 test('observed Lordfilm tabs and both custom voice menus use identities with reordered DOM options', () => {
   let active = 'Full HD';
-  const tab = text => ({ textContent: text, classList: { contains: () => active === text }, getBoundingClientRect: () => ({ width: 100 }), getAttribute: () => text === 'Плеер 2' ? "$('#player-2');https://cdn.lordfilm64.com/" : '', click: () => { active = text; } });
-  const full = tab('Full HD'), second = tab('Плеер 2');
-  const box = { querySelectorAll: () => [second, full], querySelector: () => ({}) };
+  const tab = text => ({ textContent: text, classList: { contains: () => active === text }, getBoundingClientRect: () => ({ width: 100 }), getAttribute: () => text === 'Плеер 2' ? "$('#player-2');https://cdn.lordfilm64.com/" : text === 'Плеер 3' ? "$('#player-3');https://vid1787405338.sevstar933krop.com/" : '', click: () => { active = text; } });
+  const full = tab('Full HD'), second = tab('Плеер 2'), third = tab('Плеер 3');
+  const box = { querySelectorAll: () => [second, third, full], querySelector: () => ({}) };
   const page = { location: { hostname: 'sg.lordfilm5.pro' }, querySelector: () => null, querySelectorAll: selector => selector === '.fplayer.tabs-box' ? [box] : [] };
   assert.equal(applyPlayer(page, { player: { id: 'allplay' } }), true); assert.equal(active, 'Плеер 2'); assert.equal(readSelection(page).player.id, 'allplay');
   assert.equal(applyPlayer(page, { player: { id: 'venom' } }), true); assert.equal(active, 'Full HD');
+  assert.equal(applyPlayer(page, { player: { id: 'playerjs' } }), true); assert.equal(readSelection(page).player.id, 'playerjs');
   for (const family of ['allplay', 'venom']) {
     let selected = 'TVShows', opened = 0;
-    const root = { querySelector: () => ({ click: () => opened++ }), querySelectorAll: () => items };
+    const root = { querySelector: selector => selector === '.headText_3i3' ? { textContent: selected } : selector === '.select__item-text' ? { childNodes: [{ nodeType: 3, textContent: selected }] } : { click: () => opened++ }, querySelectorAll: () => items };
     const items = ['WinMedia', 'TVShows'].map(label => ({
       textContent: label, childNodes: [{ nodeType: 3, textContent: label }],
-      getAttribute: () => label === 'WinMedia' ? 't338|WEB-DL' : 't96|WEB-DL',
+      getAttribute: () => label === 'WinMedia' ? 't338|BDRip' : 't96|BDRip',
       classList: { contains: () => selected === label }, closest: () => root, click: () => { selected = label; }
     }));
     const doc = { querySelector: selector => selector === 'video.allplay__video' ? family === 'allplay' ? {} : null : selector === 'video' ? {} : null,
@@ -105,6 +126,9 @@ test('observed Lordfilm tabs and both custom voice menus use identities with reo
     assert.equal(readSelection(doc).voice.label, 'TVShows');
     assert.equal(applyVoice(doc, { player: { id: family }, voice: voiceOption('WinMedia') }), true);
     assert.equal(selected, 'WinMedia'); assert.equal(opened, 1); assert.equal(readSelection(doc).voice.label, 'WinMedia');
+    assert.equal(applyVoice(doc, { player: { id: family }, voice: voiceOption('TVShows') }), true);
+    assert.equal(readSelection(doc).voice.label, 'TVShows');
+    selected = 'Загружается'; assert.equal(readSelection(doc).voice, null);
     assert.equal(applyVoice(doc, { player: { id: family }, voice: voiceOption('Несуществующая') }), false);
   }
 });

@@ -72,11 +72,13 @@ export class RoomConnection {
   deliver(message) { if (this.binding) this.send(this.binding, { ...message, owner: Boolean(this.owner) }); }
   async select(selection) {
     if (!this.owner || !this.connected) return { ok: false };
-    const current = this.state.source?.selection;
-    if (JSON.stringify({ player: current?.player, voice: current?.voice }) === JSON.stringify(selection)) return { ok: true, state: this.state };
-    const sourceId = this.state.sourceId;
+    const pageURL = this.state.source?.url;
+    const revision = this.selectionRevision = (this.selectionRevision || 0) + 1;
     const task = this.queue.then(async () => {
-      if (!this.connected || sourceId !== this.state.sourceId) return { ok: false };
+      if (!this.connected || revision !== this.selectionRevision || !samePage(pageURL, this.state.source?.url)) return { ok: false };
+      const current = this.state.source?.selection;
+      if (JSON.stringify({ player: current?.player, voice: current?.voice }) === JSON.stringify(selection)) return { ok: true, state: this.state };
+      const sourceId = this.state.sourceId;
       const reply = await this.request('playback:selection', { selection, sourceId, expectedVersion: this.state.version, ownerToken: this.pair.ownerToken });
       if (reply.state) this.accept(reply.state); return publicPlaybackReply(reply);
     });
@@ -96,14 +98,15 @@ export class RoomConnection {
     if (message.type === 'selection') return this.select(message.selection);
     if (!this.connected) return { ok: false, error: { message: 'Нет соединения с комнатой.' } };
     if (message.type === 'get') {
-      const reply = await this.request('playback:get', {}); if (reply.state) this.state = reply.state;
+      const reply = await this.request('playback:get', {}); if (reply.state) this.accept(reply.state);
       return publicPlaybackReply(reply);
     }
     if (message.type !== 'intent' || !this.owner) return { ok: false, error: { message: 'Общим состоянием управляет только владелец.' } };
+    if (message.sourceId !== undefined && message.sourceId !== this.state.sourceId) return { ok: false };
     if (!['play', 'pause', 'seek', 'metadata'].includes(message.action)) return { ok: false, error: { message: 'Неизвестная команда.' } };
     const sourceId = this.state.sourceId;
     const task = this.queue.then(async () => {
-      if (!this.connected || sourceId !== this.state.sourceId) return { ok: false };
+      if (!this.connected || sourceId !== this.state.sourceId || !this.permitted(sender)) return { ok: false };
       const command = async (action, extra) => {
         const reply = await this.request(`playback:${action}`, { ...extra, sourceId, expectedVersion: this.state.version, ownerToken: this.pair.ownerToken });
         if (reply.state) this.accept(reply.state); return publicPlaybackReply(reply);

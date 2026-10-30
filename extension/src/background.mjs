@@ -5,6 +5,7 @@ import { discoverPlayer, registerOrigins } from './player-tabs.mjs';
 let creating;
 const attaching = new Map();
 const attachAgain = new Set();
+const discoveryRevision = new Map();
 const offscreenURL = chrome.runtime.getURL('offscreen.html');
 const popupURL = chrome.runtime.getURL('popup.html');
 const fail = error => ({ ok: false, error: { message: error.message || 'Не удалось подключить просмотр.' } });
@@ -39,23 +40,30 @@ async function requestConsent(pending) {
 async function attachTab(tabId, pageURL, onlyIfChanged = false) {
   if (attaching.has(tabId)) { attachAgain.add(tabId); return attaching.get(tabId); }
   const task = (async () => {
+    const revision = discoveryRevision.get(tabId);
+    const stale = () => revision !== discoveryRevision.get(tabId);
     const tab = await chrome.tabs.get(tabId);
     if (!samePage(tab.url, pageURL)) throw new Error('Страница фильма уже изменилась.');
     const found = await discoverPlayer(chrome, tabId);
+    if (stale()) return;
+    if (found.changed) { attachAgain.add(tabId); return; }
     await chrome.storage.session.set({ playerNeeds: found.frame?.count ? [] : found.neededOrigins });
     if (!found.frame) throw new Error('Плеер недоступен. Разрешите его iframe в расширении; закрытые и DRM-плееры не поддерживаются.');
     const session = await storedSession();
     if (found.frame.selection) {
       const status = await engine({ type: 'status' });
+      if (stale()) return;
       if (status.owner) {
-        const previous = status.room?.playback?.source?.selection;
-        const selection = { ...found.frame.selection, voice: found.frame.selection.voice || (previous?.player.id === found.frame.selection.player.id ? previous.voice : null) };
-        check(await engine({ type: 'selection', selection }));
+        check(await engine({ type: 'selection', selection: found.frame.selection }));
       }
     }
+    if (stale()) return;
     if (onlyIfChanged && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
     check(await engine({ type: 'bind', binding: { tabId, frameId: found.frame.frameId, pageURL } }));
+    if (stale()) return;
     await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'start' }, { frameId: found.frame.frameId });
+    const current = await engine({ type: 'status' });
+    if (!stale() && !current.owner) await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'source-target', selection: current.room?.playback?.source?.selection || null }, { frameId: 0 }).catch(() => {});
     return found;
   })();
   attaching.set(tabId, task);
@@ -110,13 +118,18 @@ async function handleInternal(message, sender) {
     return { ok: true };
   }
   if (message.type === 'deliver' && offscreen) {
-    await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', ...message.payload }, { frameId: message.binding.frameId }).catch(() => {});
+    // Queue parent updates in delivery order before waiting on a possibly
+    // destroyed child iframe. Its late rejection must not clear a newer target.
+    let parentDelivery;
     if (message.payload.type === 'stop' || (message.payload.type === 'state' && !message.payload.owner)) {
-      await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.type === 'state' ? message.payload.state.source?.selection || null : null }, { frameId: 0 }).catch(() => {});
+      parentDelivery = chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.type === 'state' ? message.payload.state.source?.selection || null : null }, { frameId: 0 }).catch(() => {});
     }
+    await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', ...message.payload }, { frameId: message.binding.frameId }).catch(() => {});
+    await parentDelivery;
     return { ok: true };
   }
   if (['player-ready', 'player-layout'].includes(message.type) && sender.tab) {
+    discoveryRevision.set(sender.tab.id, (discoveryRevision.get(sender.tab.id) || 0) + 1);
     const session = await storedSession();
     if (session?.binding?.tabId !== sender.tab.id || !samePage(sender.tab.url, session.binding.pageURL)) return { ok: false };
     // A hidden old player can still contain a video. Re-evaluate visibility in
@@ -128,9 +141,9 @@ async function handleInternal(message, sender) {
   if (message.type === 'select-voice') {
     const status = await engine({ type: 'status' });
     const selection = status.room?.playback?.source?.selection;
-    if (!status.owner || !['allplay', 'venom'].includes(message.player)) throw new Error('Укажи выбранный плеер владельца.');
+    if (!status.owner || !['allplay', 'venom', 'playerjs'].includes(message.player)) throw new Error('Укажи выбранный плеер владельца.');
     const { voiceOption } = await import('./source-selection.mjs');
-    const player = { id: message.player, label: message.player === 'allplay' ? 'Плеер 2 · Allplay' : 'Full HD · player-venom' };
+    const player = { id: message.player, label: message.player === 'allplay' ? 'Плеер 2 · Allplay' : message.player === 'playerjs' ? 'Плеер 3 · Playerjs' : 'Full HD · player-venom' };
     const reply = await engine({ type: 'selection', selection: { player, voice: voiceOption(message.label) } });
     if (reply.ok) {
       const session = await storedSession();

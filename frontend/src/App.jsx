@@ -92,6 +92,9 @@ export default function App() {
     socket.on('room:state', next => {
       if (next.id === roomIdFrom(location.pathname)) setRoom(previous => previous && previous.id === next.id && next.revision >= previous.revision ? next : previous);
     });
+    socket.on('playback:state', ({ roomId: id, state }) => {
+      setRoom(previous => previous?.id === id && state.version >= previous.playback.version ? { ...previous, playback: state } : previous);
+    });
     const pop = () => {
       socket.emit('room:leave', {}, () => {});
       handoff.current = false; setManaged(false); setRoom(null); setParticipantId(null); setError(''); setPath(location.pathname);
@@ -170,10 +173,11 @@ export default function App() {
     catch { setNotice('Не удалось скопировать автоматически. Выделите ссылку и скопируйте вручную.'); }
   }
   const inside = room && me;
-  async function openFilm() {
+  async function openFilm(source) {
+    if (source?.type !== 'extension' || !source.url) { setError('Сначала выберите страницу фильма в режиме Extension.'); return; }
     setOpeningFilm(true); setError(''); handoff.current = true;
     try {
-      const reply = await extensionRequest({ type: 'open-film', roomId: room.id, filmURL: room.playback.source.url, session: readSession(room.id) });
+      const reply = await extensionRequest({ type: 'open-film', roomId: room.id, filmURL: source.url, session: readSession(room.id) });
       if (!reply.ok) throw new Error(reply.error?.message || 'Не удалось открыть фильм.');
       setManaged(true); setNotice(reply.needsPermission ? 'Разрешите доступ к сайту в окне расширения — фильм подключится автоматически.' : 'Просмотр продолжается в расширении.');
     } catch (problem) { if (!managed) handoff.current = false; setError(problem.message); }
