@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { build as frontend } from 'vite';
 import { build as backend } from 'esbuild';
+import { spawn } from 'node:child_process';
+import { packageExtension } from './package-extension.mjs';
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const output = path.join(repo, 'release');
 const release = process.env.GITHUB_SHA || 'local';
@@ -20,3 +22,8 @@ await backend({
 });
 await writeFile(path.join(output, 'release.json'), JSON.stringify({ release }) + '\n');
 await backend({ entryPoints: [path.join(repo, 'scripts/live-check-cli.mjs')], outfile: path.join(output, 'tools/check.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24', define: { 'import.meta.url': '"file://release-check"' } });
+await new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [path.join(repo, 'scripts/build-extension.mjs'), '--production'], { stdio: 'inherit' });
+  child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error('Production extension build failed')));
+});
+await packageExtension();

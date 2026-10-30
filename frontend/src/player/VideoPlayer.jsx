@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { HTML5VideoAdapter } from './HTML5VideoAdapter.mjs';
 import { PlaybackSync } from './PlaybackSync.mjs';
 import ExtensionRoomAccess from './ExtensionRoomAccess.jsx';
+import ExtensionInstall from './ExtensionInstall.jsx';
 const DevDiagnostics = import.meta.env.DEV ? lazy(() => import('./DevDiagnostics.jsx')) : null;
 
 const timeLabel = value => {
@@ -10,7 +11,7 @@ const timeLabel = value => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export default function VideoPlayer({ roomId, initialState, socket, isOwner, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm }) {
+export default function VideoPlayer({ roomId, initialState, socket, isOwner, ownerToken, connected, extensionInstalled = false, openingFilm = false, onOpenFilm, onExtensionDetected }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const syncRef = useRef(null);
@@ -109,7 +110,7 @@ export default function VideoPlayer({ roomId, initialState, socket, isOwner, own
   return <section className="video-panel">
     <div className="video-container" ref={containerRef}>
       <video ref={videoRef} className={shared.source?.type === 'html5' ? 'shared-video' : 'shared-video hidden-video'} aria-label="Общее видео" playsInline preload="metadata" controls={false} onContextMenu={event => event.preventDefault()} />
-      {shared.source?.type === 'extension' && <ExtensionRoomAccess source={shared.source} installed={extensionInstalled} busy={openingFilm} onOpen={onOpenFilm} />}
+      {shared.source?.type === 'extension' && <ExtensionRoomAccess source={shared.source} installed={extensionInstalled} busy={openingFilm} onOpen={onOpenFilm} onDetected={onExtensionDetected} />}
       {!shared.source && <div className="video-empty"><span className="screen-orbit" aria-hidden="true">▷</span><h2>Выбираем кино на вечер</h2><p>{isOwner ? 'Вставьте прямую ссылку на видео ниже.' : 'Владелец скоро добавит видео.'}</p></div>}
       {shared.source?.type === 'html5' && <div className="player-controls">
         <div className="timeline"><span>{timeLabel(seekDraft ?? position)}</span><input type="range" aria-label="Позиция видео" min="0" max={duration ?? shared.duration ?? 0} step="0.1" value={seekDraft ?? Math.min(position, duration ?? shared.duration ?? 0)} disabled={!isOwner || !connected || pending || !duration} onChange={event => setSeekDraft(Number(event.target.value))} onPointerUp={seek} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) seek(event); }} /><span>{timeLabel(duration ?? shared.duration)}</span></div>
@@ -120,6 +121,7 @@ export default function VideoPlayer({ roomId, initialState, socket, isOwner, own
       </div>}
       {blocked && <div className="autoplay-prompt"><p>Браузеру нужно ваше разрешение на воспроизведение.</p><button className="primary" onClick={() => syncRef.current.startViewing()}>Начать просмотр</button></div>}
     </div>
+    {mode === 'extension' && shared.source?.type !== 'extension' && <ExtensionInstall installed={extensionInstalled} onDetected={onExtensionDetected} />}
     <p className="sync-status" role="status">{shared.source?.type === 'extension' ? 'Extension · управляйте видео на его исходной странице' : connected ? status : 'Нет связи — восстанавливаем синхронизацию…'}</p>
     {error && <p className="message error" role="alert">{error}</p>}
     {DevDiagnostics && new URLSearchParams(location.search).get('diagnostics') === '1' && <Suspense fallback={null}><DevDiagnostics sync={syncRef.current} socket={socket} roomId={roomId} /></Suspense>}

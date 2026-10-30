@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 const portProbe = net.createServer();
 portProbe.listen(0, '127.0.0.1');
 await once(portProbe, 'listening');
@@ -34,6 +35,16 @@ try {
   assert.equal((await fetch(base + '/api/unknown')).status, 404);
   assert.equal((await fetch(base + '/missing.js')).status, 404);
   assert.match(await (await fetch(base + '/future-route')).text(), /04agtogether/);
+  const extension = await (await fetch(base + '/downloads/extension.json')).json();
+  const download = await fetch(base + extension.url);
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get('cache-control'), 'no-store');
+  assert.match(download.headers.get('content-type'), /application\/zip/);
+  assert.match(download.headers.get('content-disposition'), /attachment/);
+  const zip = Buffer.from(await download.arrayBuffer());
+  assert.equal(createHash('sha256').update(zip).digest('hex'), extension.sha256);
+  assert.equal((await fetch(base + '/downloads/' + extension.filename)).status, 200);
+  assert.equal((await fetch(base + '/downloads/missing.zip')).status, 404);
   // Exercise the exact bundled probe that the hosting deployment will run.
   const probe = spawn(process.execPath, [fileURLToPath(new URL('../release/tools/check.cjs', import.meta.url)), base, manifest.release], { stdio: 'inherit' });
   const [code] = await once(probe, 'exit'); assert.equal(code, 0, 'Bundled release probe must succeed');

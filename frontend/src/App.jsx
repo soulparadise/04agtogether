@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import VideoPlayer from './player/VideoPlayer.jsx';
+import ExtensionInstall from './player/ExtensionInstall.jsx';
 import { developmentSocketOptions, developmentSearch } from './player/dev-network.mjs';
 import { extensionRequest, savedNickname, rememberNickname } from './extension-bridge.mjs';
 
@@ -184,7 +185,7 @@ export default function App() {
       {restoring && !inside ? <section className="join-card"><p className="eyebrow">ВОЗВРАЩАЕМСЯ</p><h1>Восстанавливаем сессию…</h1></section> : inside ? <>
         <div className="room-heading"><div><p className="eyebrow">ВАШ ОБЩИЙ КИНОЗАЛ</p><h1>{room.title}</h1><p className="room-id">Комната · {room.id}</p></div><button className="quiet" onClick={leave} disabled={!connected || busy}>Выйти из комнаты</button></div>
         <div className="room-layout">
-          <VideoPlayer key={room.id} roomId={room.id} initialState={room.playback} socket={socketRef.current} isOwner={isOwner && !managed} ownerToken={readSession(room.id)?.ownerToken} connected={connected && !managed} extensionInstalled={extensionInstalled} openingFilm={openingFilm} onOpenFilm={openFilm} />
+          <VideoPlayer key={room.id} roomId={room.id} initialState={room.playback} socket={socketRef.current} isOwner={isOwner && !managed} ownerToken={readSession(room.id)?.ownerToken} connected={connected && !managed} extensionInstalled={extensionInstalled} openingFilm={openingFilm} onOpenFilm={openFilm} onExtensionDetected={setExtensionInstalled} />
           <aside className="room-sidebar">
             <section className="panel"><p className="eyebrow">ПРИГЛАСИТЬ ДРУЗЕЙ</p><label htmlFor="invite">Ссылка на комнату</label><div className="invite-row"><input id="invite" value={invitation} readOnly onFocus={event => event.target.select()} /><button className="icon-button" onClick={copyInvitation} aria-label="Копировать ссылку">{copied ? '✓' : '⧉'}</button></div><p className="hint" role="status">{copied ? 'Ссылка скопирована' : 'Достаточно ссылки — регистрация не нужна.'}</p></section>
             <section className="panel"><div className="section-heading"><h2>В комнате</h2><span className="count">{room.participants.filter(member => member.connected).length} онлайн</span></div><ul className="participants">{room.participants.map(member => <li key={member.id}><span className={`presence ${member.connected && connected ? 'present' : ''}`} /><div><strong>{member.nickname}{member.id === participantId && <small> · вы</small>}</strong><span className="member-status">{member.connected && connected ? 'На связи' : 'Не в сети'}</span></div><span className={`role ${member.role === 'owner' ? 'owner' : ''}`}>{member.role === 'owner' ? 'Владелец' : 'Зритель'}</span></li>)}</ul><p className="hint">{isOwner ? 'Вы управляете общим видео. Громкость у каждого своя.' : 'Общим просмотром управляет владелец комнаты.'}</p></section>
@@ -196,6 +197,7 @@ export default function App() {
         {roomId ? <button className="text-button" onClick={() => { setError(''); navigate('/'); }}>Вернуться на главную</button> : <p className="footnote">Без регистрации · Только ваша компания</p>}
         {!roomId && path !== '/' && <p className="hint">Такой страницы нет. Здесь можно создать новую комнату.</p>}
       </div><div className="welcome-art" aria-hidden="true"><div className="film-frame"><span className="art-label">ВЕЧЕР ВМЕСТЕ</span><div className="play-symbol">▷</div><div className="art-line" /><span className="art-caption">Расстояние — просто число.</span></div><div className="art-note">МЕСТО РЯДОМ ВСЕГДА ЕСТЬ</div></div></section>}
+      {!inside && <ExtensionInstall installed={extensionInstalled} onDetected={setExtensionInstalled} compact />}
     </main><footer>На одной волне.<span>Сделано для общих вечеров.</span></footer>
   </div>;
 }

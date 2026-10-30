@@ -180,11 +180,13 @@ Production-сайт локально: http://localhost:3000. Backend обслу�
 
 ## Первый публичный релиз — этап 8
 
-Локальная подготовка выполнена; публикация ещё не разрешена и не выполнена. Сохраняются существующий Beget, HTTPS, HTTP polling и один Node-процесс с комнатами в памяти. Старый IP в deployment receiver заменён на **45.130.41.94**.
+Приложение опубликовано на **https://soulparadise.ru**: Beget, HTTPS и HTTP polling. Комнаты хранятся в памяти процесса и теряются при перезапуске. IP deployment receiver — **45.130.41.94**. Постоянный лимит Passenger ещё требует подтверждения; автодеплой выключен.
 
 Production-сборка приложения: `pnpm build`; проверка собранного релиза: `pnpm smoke`; архив: `pnpm package:release`. Preview `artifacts/local.tgz` не является SHA-релизом и не активируется на сервере. Тестовый MP4 в публичный build не попадает.
 
-Production-расширение: `pnpm build:extension:production` → `extension/dist-production`, адрес **https://soulparadise.ru**. Локальная сборка и адрес localhost остаются отдельными. `pnpm prepare:beget` подготавливает hosting scaffold; фактический путь Node ещё нужно проверить на аккаунте.
+`pnpm build` также собирает production-расширение в `extension/dist-production`, создаёт ZIP и metadata в `release/frontend/downloads`. Версия берётся из manifest. Стабильная ссылка: **https://soulparadise.ru/downloads/04agtogether-extension.zip**; versioned ZIP доступен рядом. Сайт показывает скачивание и инструкцию на главной/странице приглашения и в режиме Extension. Для обновления заменить содержимое той же папки, перезагрузить карточку расширения и вкладки; удалять расширение не нужно. Идентичность сохранена. Dev-сборка `pnpm build:extension` остаётся отдельной.
+
+Google Chrome — основной браузер. Для Edge/Opera/Brave/Vivaldi предусмотрены адреса и ручной выбор, но фактическая совместимость не заявляется без испытания. Настольная [инструкция Яндекса](https://yandex.ru/support/browser/ru/personalization/extension) описывает CRX3; здесь CRX3 и ключи подписи не создаются, ZIP-установка в Яндексе не подтверждена. Firefox, Safari и мобильные браузеры не объявляются поддерживаемыми.
 
 [Порядок первого запуска, защищённые действия и откат](deploy/RELEASE.md). Скрипты сохраняют и проверяют исходную статическую страницу до замены и умеют восстановить её. GitHub deploy остаётся выключенным до отдельного включения BEGET_READY после успешного первого запуска. Secrets пока не настроены. Перед commit/push, ключами и заменой сайта требуется отдельное согласование пользователя.
 

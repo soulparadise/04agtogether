@@ -15,6 +15,15 @@ function createApplication({ frontendDir, release = 'development', roomOptions, 
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
   if (frontendDir) {
+    app.use('/downloads', (req, res, next) => {
+      res.set('Cache-Control', 'no-store');
+      res.set('X-Content-Type-Options', 'nosniff');
+      if (/^\/04agtogether-extension(?:-v\d+(?:\.\d+){1,3})?\.zip$/.test(req.path)) {
+        res.set('Content-Type', 'application/zip');
+        res.set('Content-Disposition', `attachment; filename="${path.basename(req.path)}"`);
+      } else if (req.path !== '/extension.json') return res.status(404).end();
+      next();
+    }, express.static(path.join(frontendDir, 'downloads'), { dotfiles: 'deny', index: false, etag: false, lastModified: false }), (_req, res) => res.status(404).end());
     app.use(express.static(frontendDir, { dotfiles: 'deny', index: false }));
     app.use((req, res, next) => {
       if ((req.method === 'GET' || req.method === 'HEAD') && !path.extname(req.path) && req.accepts('html')) {
