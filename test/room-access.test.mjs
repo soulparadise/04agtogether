@@ -93,4 +93,7 @@ test('login attempts are bounded, expired names are released and production refu
   assert.equal((await app.post('access', { ...credentials(newOwner), name: 'комната для входа', password: 'Password test' })).ok, true);
   const production = await fixture(t, {}, { release: 'production-test' });
   assert.equal((await production.post('join', { name: 'unknown', password: 'Password test' })).status, 400);
+  assert.equal((await production.post('join', { name: 'unknown', password: 'Password test' }, { 'X-Forwarded-Proto': 'https', '!~Passenger-Proto': 'https' })).status, 400);
+  const proxy = await fixture(t, {}, { release: 'production-test', passenger: true });
+  assert.equal((await proxy.post('join', { name: 'unknown', password: 'Password test' }, { '!~Passenger-Proto': 'https' })).error.code, 'INVALID_LOGIN');
 });
