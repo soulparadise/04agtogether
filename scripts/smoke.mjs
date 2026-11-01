@@ -50,6 +50,9 @@ try {
   const [code] = await once(probe, 'exit'); assert.equal(code, 0, 'Bundled release probe must succeed');
   console.log('Built frontend, API, SPA routing and production release probe: OK');
 } finally {
-  app.kill();
-  await once(app, 'exit');
+  if (app.exitCode === null && app.signalCode === null) {
+    const exited = once(app, 'exit');
+    app.kill();
+    await exited;
+  }
 }
