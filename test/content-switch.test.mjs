@@ -12,7 +12,7 @@ async function fixture(t, owner = false) {
   class Element {
     style = {}; children = []; isConnected = true; hidden = false; listeners = new Map();
     append(...nodes) { for (const node of nodes) { node.parentNode = this; this.children.push(node); } }
-    attachShadow() { return new Element(); }
+    attachShadow() { this.shadow = new Element(); return this.shadow; }
     addEventListener(name, fn) { if (!this.listeners.has(name)) this.listeners.set(name, new Set()); this.listeners.get(name).add(fn); }
     removeEventListener(name, fn) { this.listeners.get(name)?.delete(fn); }
     remove() { this.isConnected = false; }
@@ -74,14 +74,16 @@ async function fixture(t, owner = false) {
   const send = message => new Promise(resolve => receive({ target: 'player', ...message }, { id: 'fixture' }, resolve));
   for (let i = 0; i < 5; i++) await tick();
   return {
-    sent, statuses, send, get video() { return selected; }, get primed() { return primed; },
+    sent, statuses, send, root, get video() { return selected; }, get primed() { return primed; },
     block(value) { blocked = value; },
-    async switchTo(id, player, ready = 4, status = 'playing', position = 60, reuse = false) {
+    async switchTo(id, player, ready = 4, status = 'playing', position = 60, reuse = false, local = false) {
       const old = selected;
       if (!reuse) { selected = new Video(); old.isConnected = false; }
       family = player; selected.family = player; selected.readyState = ready; selected.paused = reuse ? selected.paused : true;
-      state = makeState(id, player, status, position);
-      receive({ target: 'player', type: 'state', state }, { id: 'fixture' }, () => {});
+      if (!local) {
+        state = makeState(id, player, status, position);
+        receive({ target: 'player', type: 'state', state }, { id: 'fixture' }, () => {});
+      } else selected.fire('loadedmetadata');
       for (let i = 0; i < 5; i++) await tick();
       return old;
     },
@@ -89,18 +91,32 @@ async function fixture(t, owner = false) {
   };
 }
 
-test('content handoff primes lazy Allplay, keeps latest Play/position and supports repeated verified confirmations', async t => {
+test('permission notice explains the host, survives repeated discovery and disappears when no access is needed', async t => {
+  const f = await fixture(t);
+  await f.send({ type: 'permission-notice', origins: ['https://player.example'] });
+  const notice = f.root.children.at(-1), box = notice.shadow.children[0];
+  assert.match(box.children[1].textContent, /player.example/);
+  assert.equal(box.children[2].textContent, 'Открыть расширение для разрешения');
+  await f.send({ type: 'permission-notice', origins: ['https://second.example'] });
+  assert.equal(f.root.children.at(-1), notice);
+  assert.match(box.children[1].textContent, /second.example/);
+  await f.send({ type: 'permission-notice', origins: [] });
+  assert.equal(notice.isConnected, false);
+  assert.equal(f.sent.length, 0);
+});
+
+test('local player switches prime lazy Allplay and keep room playback without matching or confirming the Owner choice', async t => {
   const f = await fixture(t);
   assert.equal(f.video.paused, false);
   const old = await f.switchTo(2, 'allplay', 0, 'playing', 70);
   assert.ok(f.primed > 0, 'Allplay must be primed before metadata, otherwise both sides wait forever');
   assert.equal(old.paused, true); assert.equal(f.video.paused, false); assert.ok(f.video.currentTime >= 70);
   for (const [id, player] of [[3, 'venom'], [4, 'allplay'], [5, 'venom']]) {
-    await f.switchTo(id, player, player === 'allplay' ? 0 : 4, 'playing', 70 + id);
-    assert.equal(f.video.paused, false); assert.ok(f.video.currentTime >= 70 + id);
-    assert.equal((await f.send({ type: 'confirm-selection', sourceId: `source-${id}` })).ok, true);
-    f.wrongPlayer(); assert.equal((await f.send({ type: 'confirm-selection', sourceId: `source-${id}` })).ok, false);
-    f.wrongPlayer(); assert.equal((await f.send({ type: 'confirm-selection', sourceId: `source-${id}` })).ok, true);
+    await f.switchTo(id, player, player === 'allplay' ? 0 : 4, 'playing', 70 + id, false, true);
+    assert.equal(f.video.paused, false); assert.ok(f.video.currentTime >= 70);
+    const discovery = await f.send({ type: 'discover' });
+    assert.equal(discovery.sourceId, 'source-2', 'A local player choice does not replace the room source');
+    assert.equal(discovery.syncAttached, true);
   }
   assert.equal(f.sent.length, 0, 'Viewer loading/play/pause must never publish room commands');
 });
@@ -113,6 +129,8 @@ test('technical owner pause during reuse never becomes a shared Pause; blocked l
   viewer.block(true); await viewer.switchTo(2, 'allplay', 0);
   assert.ok(viewer.statuses.some(status => status.includes('Браузер не разрешил')));
   viewer.block(false);
-  assert.equal((await viewer.send({ type: 'confirm-selection', sourceId: 'source-2' })).ok, true);
+  // A real user gesture is handled by the existing in-video button. A site
+  // metadata event here models loading after the user presses native Play.
+  viewer.video.readyState = 4; viewer.video.fire('loadedmetadata');
   await tick(); assert.equal(viewer.video.paused, false);
 });

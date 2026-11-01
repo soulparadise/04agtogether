@@ -16,6 +16,16 @@ async function ensureEngine() {
 }
 async function engine(message) { await ensureEngine(); return chrome.runtime.sendMessage({ target: 'engine', ...message }); }
 function check(reply) { if (!reply?.ok) throw new Error(reply?.error?.message || 'Нет соединения с комнатой.'); return reply; }
+async function currentAppContext(tabId, roomId, expectedOrigin) {
+  const tab = await chrome.tabs.get(tabId);
+  // tabs.Tab.url is withheld until host access/activeTab is granted. The
+  // existing webNavigation permission can verify the actual top document
+  // before consent without trusting a URL supplied by the web message.
+  const frame = await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
+  const context = trustedWebContext({ url: frame?.url, tab, frameId: 0 }, roomId);
+  if (context.origin !== expectedOrigin) throw new Error('Страница комнаты изменилась. Откройте фильм из нужной комнаты ещё раз.');
+  return context;
+}
 async function storedSession() {
   const stored = await chrome.storage.session.get(['session', 'pair']);
   return stored.session || (stored.pair ? { pair: stored.pair } : null);
@@ -37,7 +47,7 @@ async function requestConsent(pending) {
   catch { await chrome.windows.create({ url: popupURL + '#permission', type: 'popup', width: 380, height: 570 }); }
   return { ok: true, needsPermission: true };
 }
-async function attachTab(tabId, pageURL, onlyIfChanged = false) {
+async function attachTab(tabId, pageURL, onlyIfChanged = true) {
   if (attaching.has(tabId)) { attachAgain.add(tabId); return attaching.get(tabId); }
   const scan = async () => {
     const revision = discoveryRevision.get(tabId);
@@ -48,17 +58,11 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
     if (stale()) return;
     if (found.changed) { attachAgain.add(tabId); return; }
     await chrome.storage.session.set({ playerNeeds: found.frame?.count ? [] : found.neededOrigins });
+    await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'permission-notice', origins: found.frame?.count ? [] : found.neededOrigins }, { frameId: 0 }).catch(() => {});
     if (!found.frame) throw new Error('Плеер недоступен. Разрешите его iframe в расширении; закрытые и DRM-плееры не поддерживаются.');
     const session = await storedSession();
-    if (found.frame.selection) {
-      const status = await engine({ type: 'status' });
-      if (stale()) return;
-      if (status.owner) {
-        check(await engine({ type: 'selection', selection: found.frame.selection }));
-      }
-    }
     if (stale()) return;
-    if (onlyIfChanged && found.frame.active && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
+    if (onlyIfChanged && found.frame.active && found.frame.syncAttached !== false && session?.binding?.frameId === found.frame.frameId && samePage(session.binding.pageURL, pageURL)) return found;
     if (session?.binding?.tabId === tabId && session.binding.frameId !== found.frame.frameId) {
       await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'stop', pause: true }, { frameId: session.binding.frameId }).catch(() => {});
       if (stale()) return;
@@ -66,8 +70,7 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
     check(await engine({ type: 'bind', binding: { tabId, frameId: found.frame.frameId, pageURL } }));
     if (stale()) return;
     check(await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'start' }, { frameId: found.frame.frameId }));
-    const current = await engine({ type: 'status' });
-    if (!stale() && !current.owner) await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'source-target', selection: current.room?.playback?.source?.selection || null }, { frameId: 0 }).catch(() => {});
+    await chrome.tabs.sendMessage(tabId, { target: 'player', type: 'permission-notice', origins: found.frame.count ? [] : found.neededOrigins }, { frameId: 0 }).catch(() => {});
     return found;
   };
   const task = (async () => {
@@ -88,9 +91,7 @@ async function attachTab(tabId, pageURL, onlyIfChanged = false) {
 async function openForViewer(pending) {
   const verifyContext = async () => {
     if (!Number.isInteger(pending.appTabId)) throw new Error('Откройте нужную комнату на сайте и нажмите «Открыть фильм» ещё раз.');
-    const tab = await chrome.tabs.get(pending.appTabId);
-    trustedWebContext({ url: tab.url, tab, frameId: 0 }, pending.pair.roomId);
-    if (new URL(tab.url).origin !== pending.pair.origin) throw new Error('Страница комнаты изменилась. Откройте фильм из нужной комнаты ещё раз.');
+    await currentAppContext(pending.appTabId, pending.pair.roomId, pending.pair.origin);
   };
   await verifyContext();
   const previous = await storedSession();
@@ -115,6 +116,8 @@ async function openForViewer(pending) {
   return { ok: true };
 }
 async function disconnect() {
+  const previous = await storedSession();
+  if (previous?.binding) await chrome.tabs.sendMessage(previous.binding.tabId, { target: 'player', type: 'permission-notice', origins: [] }, { frameId: 0 }).catch(() => {});
   check(await engine({ type: 'disconnect' }));
   await chrome.storage.session.remove(['session', 'pair', 'pending', 'playerNeeds']);
   return { ok: true };
@@ -138,20 +141,23 @@ async function handleInternal(message, sender) {
   const offscreen = !sender.tab && sender.url === offscreenURL;
   const popup = sender.url?.split('#')[0] === popupURL; // action popup or permission window
   if (message.type === 'bootstrap' && offscreen) return storedSession();
+  if (message.type === 'open-player-permissions' && sender.tab && sender.frameId === 0) {
+    const session = await storedSession();
+    if (session?.binding?.tabId !== sender.tab.id || !samePage(sender.tab.url, session.binding.pageURL)) throw new Error('Эта вкладка не подключена к просмотру.');
+    // Re-discover; never accept a permission origin supplied by page DOM.
+    await attachTab(sender.tab.id, session.binding.pageURL).catch(() => {});
+    const { playerNeeds = [] } = await chrome.storage.session.get('playerNeeds');
+    if (!playerNeeds.length) return { ok: true };
+    await chrome.windows.create({ url: popupURL + '#player-permission', type: 'popup', width: 380, height: 570 });
+    return { ok: true };
+  }
   if (message.type === 'persist' && offscreen) {
     if (message.session) await chrome.storage.session.set({ session: message.session });
     else await chrome.storage.session.remove(['session', 'pair']);
     return { ok: true };
   }
   if (message.type === 'deliver' && offscreen) {
-    // Queue parent updates in delivery order before waiting on a possibly
-    // destroyed child iframe. Its late rejection must not clear a newer target.
-    let parentDelivery;
-    if (message.payload.type === 'stop' || (message.payload.type === 'state' && !message.payload.owner)) {
-      parentDelivery = chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', type: 'source-target', selection: message.payload.type === 'state' ? message.payload.state.source?.selection || null : null }, { frameId: 0 }).catch(() => {});
-    }
     await chrome.tabs.sendMessage(message.binding.tabId, { target: 'player', ...message.payload }, { frameId: message.binding.frameId }).catch(() => {});
-    await parentDelivery;
     return { ok: true };
   }
   if (['player-ready', 'player-layout'].includes(message.type) && sender.tab) {
@@ -164,27 +170,6 @@ async function handleInternal(message, sender) {
     return { ok: true };
   }
   if (!popup) throw new Error('Недоверенный контекст расширения.');
-  if (message.type === 'select-voice') {
-    const status = await engine({ type: 'status' });
-    const selection = status.room?.playback?.source?.selection;
-    if (!status.owner || !['allplay', 'venom', 'playerjs'].includes(message.player)) throw new Error('Укажи выбранный плеер владельца.');
-    const { voiceOption } = await import('./source-selection.mjs');
-    const player = { id: message.player, label: message.player === 'allplay' ? 'Плеер 2 · Allplay' : message.player === 'playerjs' ? 'Плеер 3 · Playerjs' : 'Full HD · player-venom' };
-    const reply = await engine({ type: 'selection', selection: { player, voice: voiceOption(message.label) } });
-    if (reply.ok) {
-      const session = await storedSession();
-      if (session?.binding) await chrome.tabs.sendMessage(session.binding.tabId, { target: 'player', type: 'confirm-selection', selection: reply.state.source.selection, sourceId: reply.state.sourceId }, { frameId: session.binding.frameId });
-    }
-    return reply;
-  }
-  if (message.type === 'confirm-selection') {
-    const session = await storedSession();
-    if (!session?.binding) throw new Error('Сначала откройте фильм.');
-    await attachTab(session.binding.tabId, session.binding.pageURL, true);
-    const current = await storedSession(), status = await engine({ type: 'status' });
-    if (!current?.binding) throw new Error('Плеер ещё подключается. Повторите подтверждение.');
-    return chrome.tabs.sendMessage(current.binding.tabId, { target: 'player', type: 'confirm-selection', selection: status.room?.playback?.source?.selection, sourceId: status.room?.playback?.sourceId }, { frameId: current.binding.frameId });
-  }
   if (message.type === 'popup-state') {
     const pending = await pendingLaunch();
     const { nickname } = await chrome.storage.local.get('nickname');
@@ -212,11 +197,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
   void (async () => {
-    const context = trustedWebContext(sender, ['open-film', 'room-status', 'leave-room', 'room-access', 'room-source'].includes(message.type) ? message.roomId : undefined);
-    if (['open-film', 'room-access', 'room-source'].includes(message.type)) {
-      const tab = await chrome.tabs.get(context.tabId);
-      trustedWebContext({ ...sender, url: tab.url }, message.roomId);
-      if (new URL(tab.url).origin !== context.origin) throw new Error('Страница комнаты изменилась. Откройте её заново.');
+    const context = trustedWebContext(sender, ['open-film', 'room-status', 'leave-room', 'room-source'].includes(message.type) ? message.roomId : undefined);
+    if (['open-film', 'room-source'].includes(message.type)) {
+      await currentAppContext(context.tabId, message.roomId, context.origin);
     }
     if (message.type === 'ping') return { ok: true };
     if (message.type === 'profile') return { ok: true, nickname: (await chrome.storage.local.get('nickname')).nickname || '' };
@@ -229,10 +212,10 @@ chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
       if (status.appOrigin !== context.origin || status.roomId !== message.roomId) throw new Error('Эта комната не подключена в расширении.');
       return disconnect();
     }
-    if (['room-access', 'room-source'].includes(message.type)) {
+    if (message.type === 'room-source') {
       const status = await engine({ type: 'status' });
       if (!status.owner || status.appOrigin !== context.origin || status.roomId !== message.roomId) throw new Error('Подключите эту комнату в расширении с правами владельца.');
-      return engine(message.type === 'room-access' ? { type: 'configure-access', settings: message.settings } : { type: 'set-source', options: { mode: message.mode, url: message.url } });
+      return engine({ type: 'set-source', options: { mode: message.mode, url: message.url } });
     }
     if (message.type !== 'open-film') throw new Error('Неизвестное сообщение.');
     const stored = await storedSession();
@@ -262,7 +245,15 @@ chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
   if (change.url) void checkTab(tabId, change.url).catch(() => {});
   else if (change.status === 'complete') void checkTab(tabId, tab.url).catch(() => {});
 });
-chrome.permissions.onAdded.addListener(permissions => { void registerOrigins(chrome, permissions.origins).catch(() => {}); });
+chrome.permissions.onAdded.addListener(permissions => {
+  void (async () => {
+    await registerOrigins(chrome, permissions.origins);
+    const session = await storedSession();
+    // Registration covers future documents. An already loaded player iframe
+    // also needs discovery/injection now, limited to the bound film tab.
+    if (session?.binding) await attachTab(session.binding.tabId, session.binding.pageURL);
+  })().catch(() => {});
+});
 void (async () => {
   await registerOrigins(chrome, (await chrome.permissions.getAll()).origins);
   const session = await storedSession();

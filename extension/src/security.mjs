@@ -26,9 +26,14 @@ export function publicPlaybackReply(reply) {
 }
 // Chrome supplies sender; never take an app origin or role from the message.
 export function trustedWebContext(sender, roomId) {
+  const reject = (code, explanation) => { throw new Error(`Недоверенный источник сообщения: ${explanation} (${code}).`); };
   let url;
-  try { url = new URL(sender.url); } catch { throw new Error('Недоверенный источник сообщения.'); }
-  if (sender.id || !sender.tab || sender.frameId !== 0 || !APP_ORIGINS.includes(url.origin)) throw new Error('Недоверенный источник сообщения.');
+  try { url = new URL(sender?.url); } catch { reject('SOURCE_URL', 'браузер не передал корректный адрес страницы'); }
+  if (sender.id) reject('SOURCE_EXTENSION', 'браузер указал расширение в качестве отправителя');
+  if (!sender.tab) reject('SOURCE_TAB', 'браузер не передал вкладку отправителя');
+  if (sender.frameId === undefined) reject('SOURCE_FRAME_MISSING', 'браузер не передал номер фрейма страницы');
+  if (sender.frameId !== 0) reject('SOURCE_FRAME', 'не подтверждена главная страница вкладки');
+  if (!APP_ORIGINS.includes(url.origin)) reject('SOURCE_ORIGIN', 'адрес приложения не входит в список разрешённых');
   if (roomId !== undefined && (!/^[a-f0-9]{32}$/.test(roomId) || url.pathname.replace(/\/$/, '') !== `/room/${roomId}`)) throw new Error('Сообщение не соответствует открытой комнате.');
   return { origin: url.origin, tabId: sender.tab.id };
 }

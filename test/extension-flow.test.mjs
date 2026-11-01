@@ -17,6 +17,13 @@ test('web handoff accepts only exact app origins, top frames and matching room p
     { url: `https://soulparadise.ru.attacker.invalid/room/${roomId}` }, { url: `http://127.0.0.1:5174/room/${roomId}` },
     { url: `http://127.0.0.1:5173/room/${'b'.repeat(32)}` }, { frameId: 2 }, { id: 'another-extension' }, { tab: null }
   ]) assert.throws(() => trustedWebContext({ ...sender, ...altered }, roomId));
+  // Missing browser metadata remains a refusal, with an actionable reason.
+  // Never echo the message, room credentials or arbitrary sender values.
+  for (const [altered, code] of [
+    [{ url: undefined }, 'SOURCE_URL'], [{ id: 'another-extension' }, 'SOURCE_EXTENSION'],
+    [{ tab: undefined }, 'SOURCE_TAB'], [{ frameId: undefined }, 'SOURCE_FRAME_MISSING'],
+    [{ frameId: 2 }, 'SOURCE_FRAME'], [{ url: 'https://attacker.invalid/' }, 'SOURCE_ORIGIN']
+  ]) assert.throws(() => trustedWebContext({ ...sender, ...altered }, roomId), new RegExp(`\\(${code}\\)`));
   const pair = validatePair({ origin: 'http://127.0.0.1:5173', roomId, participantId: 'b'.repeat(32), sessionToken: 'c'.repeat(64), role: 'owner' });
   assert.equal(pair.role, undefined); assert.equal(pair.ownerToken, undefined);
 });
@@ -25,10 +32,11 @@ test('one-click creation uses existing rooms; viewer handoff and saved binding r
   const app = createApplication(); app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening');
   t.after(() => new Promise(resolve => app.io.close(resolve)));
   const origin = `http://127.0.0.1:${app.server.address().port}`, pageURL = 'http://127.0.0.1:5174/';
-  const owner = await RoomConnection.createOwner({ origin, nickname: 'Owner', title: 'Тестовый фильм', pageURL, initial: { position: 12, duration: 90, playing: false } });
+  const owner = await RoomConnection.createOwner({ origin, nickname: 'Owner', title: 'Тестовый фильм', pageURL, initial: { position: 12, duration: 90, playing: false, selection: { player: { id: 'venom', label: 'Full HD' }, voice: null } } });
   t.after(() => owner.disconnect());
   assert.equal(owner.status().title, 'Тестовый фильм'); assert.equal(owner.status().owner, true);
   assert.equal(owner.state.position, 12); assert.ok(!owner.status().invitation.includes(owner.pair.ownerToken));
+  assert.equal(owner.state.source.selection, undefined, 'Local player/voice never enters shared state');
   const tab = io(origin, { transports: ['polling'], upgrade: false }); t.after(() => tab.disconnect()); await once(tab, 'connect');
   const joined = await tab.timeout(2000).emitWithAck('room:join', { roomId: owner.pair.roomId, nickname: 'Viewer' });
   const pair = { origin, roomId: joined.room.id, participantId: joined.participantId, sessionToken: joined.sessionToken };
@@ -43,6 +51,27 @@ test('one-click creation uses existing rooms; viewer handoff and saved binding r
   const response = await restored.content(binding, { type: 'attach' });
   assert.equal(response.owner, false); assert.equal(response.state.position, 12);
   assert.ok(!JSON.stringify(response).includes(pair.sessionToken));
+});
+
+test('site-created Owner continues the same room in the extension and can choose another film; Viewer cannot', async t => {
+  const app = createApplication(); app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening');
+  const origin = `http://127.0.0.1:${app.server.address().port}`;
+  const web = io(origin, { transports: ['polling'], upgrade: false });
+  let owner, viewer;
+  t.after(async () => { owner?.disconnect(); viewer?.disconnect(); web.disconnect(); await new Promise(resolve => app.io.close(resolve)); });
+  await once(web, 'connect');
+  const created = await web.timeout(2000).emitWithAck('room:create', { nickname: 'Site Owner' });
+  const pair = { origin, roomId: created.room.id, participantId: created.participantId, sessionToken: created.sessionToken, ownerToken: created.ownerToken };
+  owner = new RoomConnection(pair); owner.start(); await owner.whenReady();
+  const reply = await owner.setSource({ mode: 'extension', url: 'https://film.example/first' });
+  assert.equal(reply.ok, true); assert.equal(owner.status().roomId, created.room.id);
+  assert.equal((await owner.setSource({ mode: 'extension', url: 'https://film.example/second' })).ok, true);
+  assert.equal(owner.state.source.url, 'https://film.example/second');
+  const joined = await web.timeout(2000).emitWithAck('room:join', { roomId: created.room.id, nickname: 'Viewer' });
+  viewer = new RoomConnection({ origin, roomId: created.room.id, participantId: joined.participantId, sessionToken: joined.sessionToken });
+  viewer.start(); await viewer.whenReady();
+  assert.equal((await viewer.setSource({ mode: 'extension', url: 'https://film.example/another' })).ok, false);
+  assert.equal(viewer.state.source.url, 'https://film.example/second');
 });
 
 test('background hands off automatically, survives worker reload and releases the closed bound tab (Chrome API harness)', async t => {
@@ -76,8 +105,8 @@ test('background hands off automatically, survives worker reload and releases th
     storage: { session: { get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, store[key]])), set: async values => Object.assign(store, values), remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete store[key]; } }, local: { get: async () => ({ nickname: 'Viewer' }) } },
     permissions: { contains: async () => grants, getAll: async () => ({ origins: [] }), onAdded: event('added') },
     scripting: { getRegisteredContentScripts: async () => [], registerContentScripts: async () => {}, executeScript: async () => {} },
-    webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: filmURL }, { frameId: 1, parentFrameId: 0, url: 'about:blank' }] },
-    tabs: { get: async id => { if (!tabs.has(id)) throw new Error('Closed'); return tabs.get(id); }, create: async ({ url }) => { const tab = { id: nextTab++, url }; tabs.set(tab.id, tab); return tab; },
+    webNavigation: { getFrame: async ({ tabId, frameId }) => frameId === 0 && tabs.has(tabId) ? { url: tabs.get(tabId).url, parentFrameId: -1 } : null, getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: filmURL }, { frameId: 1, parentFrameId: 0, url: 'about:blank' }] },
+    tabs: { get: async id => { if (!tabs.has(id)) throw new Error('Closed'); return id === 1 ? { id } : tabs.get(id); }, create: async ({ url }) => { const tab = { id: nextTab++, url }; tabs.set(tab.id, tab); return tab; },
       update: async (id, patch) => Object.assign(tabs.get(id), patch), sendMessage: async (_id, message, { frameId } = {}) => {
         delivered.push(message);
         if (message.type === 'start') { starts++; activeFrames.add(frameId); return { ok: true }; }
@@ -97,7 +126,12 @@ test('background hands off automatically, survives worker reload and releases th
   const popup = { id: 'test-extension', url: chrome.runtime.getURL('popup.html') };
   const pending = await send('internal', { target: 'background', type: 'popup-state' }, popup);
   assert.ok(!JSON.stringify(pending).includes(token));
+  const originalRoomURL = tabs.get(1).url;
+  tabs.get(1).url = `http://127.0.0.1:5173/room/${'d'.repeat(32)}`;
   grants = true;
+  assert.equal((await send('internal', { target: 'background', type: 'finish-open' }, popup)).ok, false, 'Navigation during permission consent cannot open another room');
+  assert.equal(tabs.size, 1);
+  tabs.get(1).url = originalRoomURL;
   assert.equal((await send('internal', { target: 'background', type: 'finish-open' }, popup)).ok, true);
   assert.equal(tabs.get(10).url, filmURL); assert.equal(store.session.binding.tabId, 10);
   assert.equal(active.pair.role, undefined);
@@ -115,9 +149,15 @@ test('background hands off automatically, survives worker reload and releases th
   assert.ok(activeFrames.has(1), 'A bind interrupted by parent layout must still start the new frame');
   for (const frameId of [0, 1, 0]) {
     selectedFrame = frameId; activeFrames.clear();
-    assert.equal((await send('internal', { target: 'background', type: 'confirm-selection' }, popup)).ok, true, 'Every manual confirmation rediscovers and starts the actual frame');
+    assert.equal((await send('internal', { target: 'background', type: 'player-layout' }, { id: 'test-extension', tab: tabs.get(10), frameId: 0 })).ok, true, 'Local player switches attach automatically without confirming the Owner choice');
     assert.equal(store.session.binding.frameId, frameId);
   }
+  selectedFrame = 1; activeFrames.clear();
+  listeners.added({ origins: ['http://127.0.0.1/*'] });
+  for (let i = 0; i < 30 && !activeFrames.has(1); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(activeFrames.has(1), 'Granting a player origin rescans the existing bound film without reload or another click');
+  assert.equal(openedConsent, 1, 'Already granted sites and player switches do not reopen permission consent');
+  assert.ok(delivered.every(message => message.type !== 'source-target' && message.type !== 'confirm-selection'));
   assert.equal((await send('internal', { target: 'background', type: 'player-ready' }, { id: 'test-extension', tab: { id: 11, url: filmURL }, frameId: 0 })).ok, false);
   const siteRoomId = 'd'.repeat(32);
   tabs.get(1).url = `http://127.0.0.1:5173/room/${siteRoomId}`;

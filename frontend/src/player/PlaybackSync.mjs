@@ -13,7 +13,7 @@ export class PlaybackSync {
     this.calibrationAttempts = 0;
     this.diagnosticListeners = new Set();
     this.unsubscribers = [
-      adapter.on('ready', () => { this.failed = false; this.buffering = false; this.onError(''); this.apply(true); this.onMetadata(); void this.refresh(); }),
+      adapter.on('ready', detail => { this.failed = false; this.buffering = false; this.onError(''); this.apply(Boolean(detail?.metadata)); this.onMetadata(); void this.refresh(); }),
       adapter.on('duration', () => this.onMetadata()),
       adapter.on('buffering', () => { this.buffering = true; onStatus('Буферизация — догоняем общий просмотр…'); }),
       adapter.on('playing', () => { this.buffering = false; this.apply(); }),
@@ -37,7 +37,10 @@ export class PlaybackSync {
       return false;
     }
     const sourceChanged = !this.state || state.sourceId !== this.state.sourceId;
-    const changed = !this.state || state.version !== this.state.version;
+    // A metadata revision must not behave like an explicit seek. Compare the
+    // timeline at the same server time instead of forcing every new version.
+    const previousPosition = this.state ? this.state.basePosition + (this.state.status === 'playing' ? Math.max(0, state.serverNow - this.state.updatedAt) / 1000 : 0) : 0;
+    const changed = !this.state || state.status !== this.state.status || Math.abs(state.position - Math.min(previousPosition, this.state.duration ?? 604800)) > 0.08;
     this.state = state;
     this.awaitingFreshState = false;
     this.receivedAt = this.now();
@@ -75,7 +78,9 @@ export class PlaybackSync {
     const target = this.targetPosition();
     const drift = Math.abs(this.adapter.getCurrentTime() - target);
     const threshold = this.state.status === 'playing' ? 0.45 : 0.08;
-    if (drift > (force ? 0.08 : threshold) && (force || this.now() - this.lastSeek > 1500)) {
+    const correctionDeferred = !force && (this.adapter.isSeeking?.() || this.adapter.canCorrectTo?.(target) === false);
+    const playingStatus = () => correctionDeferred && drift > threshold ? 'Ждём буфер для выравнивания позиции…' : this.samples.length < 3 ? 'Уточняем синхронизацию…' : 'Синхронизировано';
+    if (!correctionDeferred && drift > (force ? 0.08 : threshold) && (force || this.now() - this.lastSeek > 1500)) {
       this.adapter.seek(target);
       if (this.diagnosticsEnabled) this.corrections++;
       this.lastSeek = this.now();
@@ -101,7 +106,7 @@ export class PlaybackSync {
       Promise.resolve(play).then(() => {
         if (!this.destroyed && this.state.sourceId === sourceId) {
           if (this.state.status !== 'playing') this.adapter.pause();
-          else if (!this.buffering) this.onStatus(this.samples.length < 3 ? 'Уточняем синхронизацию…' : 'Синхронизировано');
+          else if (!this.buffering) this.onStatus(playingStatus());
         }
       }).catch(error => {
         if (this.destroyed || this.state.sourceId !== sourceId || this.state.status !== 'playing') return;
@@ -109,7 +114,7 @@ export class PlaybackSync {
           this.blocked = true; this.onBlocked(true); this.onStatus('Нажмите «Начать просмотр», чтобы включить видео');
         } else if (error.name !== 'AbortError') this.onError('Не удалось начать воспроизведение. Проверьте формат и доступность видео.');
       }).finally(() => { if (this.pendingPlay === pending) this.pendingPlay = null; });
-    } else if (!this.buffering) this.onStatus(this.samples.length < 3 ? 'Уточняем синхронизацию…' : 'Синхронизировано');
+    } else if (!this.buffering) this.onStatus(playingStatus());
   }
   async refresh() {
     if (this.destroyed || this.inFlight) return;

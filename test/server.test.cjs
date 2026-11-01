@@ -15,6 +15,9 @@ test('health and two concurrent polling sessions work; unknown API routes stay 4
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal((await response.json()).release, 'test-release');
   assert.equal((await fetch(base + '/api/missing')).status, 404);
+  for (const action of ['join', 'access']) {
+    assert.equal((await fetch(base + '/api/rooms/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 404, 'Cancelled name/password API is unavailable');
+  }
   const sockets = [0, 1].map(() => client(base, { transports: ['polling'], upgrade: false, forceNew: true, reconnection: false, autoConnect: false }));
   t.after(() => sockets.forEach(socket => socket.disconnect()));
   await Promise.all(sockets.map(async socket => {

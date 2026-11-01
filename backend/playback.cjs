@@ -3,14 +3,6 @@ const { randomBytes } = require('node:crypto');
 const MAX_TIME = 7 * 24 * 3600;
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const validTime = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TIME;
-function selectionOf(value) {
-  const option = value => value && typeof value === 'object' && typeof value.id === 'string' && /^[a-zA-Z0-9_.:-]{1,96}$/.test(value.id)
-    && typeof value.label === 'string' && value.label.trim().length >= 1 && value.label.length <= 96 && !/[\u0000-\u001f\u007f]/.test(value.label) ? { id: value.id, label: value.label.trim() } : null;
-  if (!value || typeof value !== 'object' || !['allplay', 'venom', 'playerjs'].includes(value.player?.id)) return null;
-  const player = option(value.player), voice = value.voice === null ? null : option(value.voice);
-  return player && (value.voice === null || voice) ? { player, voice } : null;
-}
-
 function createPlayback(clock) {
   return { source: null, sourceId: null, status: 'paused', basePosition: 0, updatedAt: clock(), version: 0, duration: null };
 }
@@ -37,10 +29,6 @@ function applyPlayback(state, action, payload, clock) {
     try { url = new URL(payload.url.trim()); } catch { return fail('INVALID_SOURCE', 'Некорректная ссылка на видео.'); }
     if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) return fail('INVALID_SOURCE', 'Разрешены только HTTP(S)-ссылки без логина и пароля в адресе.');
     Object.assign(next, { source: { type: payload.mode === 'extension' ? 'extension' : 'html5', url: url.href }, sourceId: randomBytes(16).toString('hex'), status: 'paused', basePosition: 0, duration: null });
-  } else if (action === 'selection') {
-    const selection = selectionOf(payload.selection);
-    if (state.source?.type !== 'extension' || !selection) return fail('INVALID_SELECTION', 'Не удалось подтвердить выбранный плеер или озвучку.');
-    Object.assign(next, { source: { ...state.source, selection: { ...selection, version: (state.source.selection?.version || 0) + 1 } }, sourceId: randomBytes(16).toString('hex'), duration: null });
   } else if (action === 'play') {
     next.status = 'playing';
     if (state.duration !== null && current.position >= state.duration) next.basePosition = 0;
@@ -55,4 +43,4 @@ function applyPlayback(state, action, payload, clock) {
   } else return fail('INVALID_ACTION', 'Неизвестная команда воспроизведения.');
   return { ok: true, playback: next };
 }
-module.exports = { createPlayback, snapshotPlayback, applyPlayback, selectionOf };
+module.exports = { createPlayback, snapshotPlayback, applyPlayback };

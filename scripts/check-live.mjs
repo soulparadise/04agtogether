@@ -32,7 +32,7 @@ export async function checkLive(base, expectedRelease, ip) {
     const viewer = await request(clients[1], 'room:join', { roomId: owner.room.id, nickname: 'Release viewer' });
     assert.equal(viewer.ok, true, 'Clients must see the same in-memory room; verify the Passenger process limit');
     let state = owner.room.playback;
-    for (const [action, payload] of [['source', { mode: 'extension', url: new URL('/unused-release-check.mp4', base).href }], ['selection', { selection: { player: { id: 'allplay', label: 'Плеер 2 · Allplay' }, voice: { id: 'probe', label: 'Release check' } } }], ['play', {}], ['seek', { position: 7 }], ['pause', {}]]) {
+    for (const [action, payload] of [['source', { mode: 'extension', url: new URL('/unused-release-check.mp4', base).href }], ['play', {}], ['seek', { position: 7 }], ['pause', {}]]) {
       const reply = await request(clients[0], `playback:${action}`, { ...payload, sourceId: state.sourceId, expectedVersion: state.version, ownerToken: owner.ownerToken });
       assert.equal(reply.ok, true); state = reply.state;
     }

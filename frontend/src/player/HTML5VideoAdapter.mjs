@@ -5,7 +5,7 @@ export class HTML5VideoAdapter {
     this.listeners = new Map();
     this.bindings = [];
     for (const [domEvent, event] of Object.entries({ loadedmetadata: 'ready', canplay: 'ready', waiting: 'buffering', playing: 'playing', ended: 'ended', error: 'error', durationchange: 'duration' })) {
-      const listener = () => this.emit(event);
+      const listener = () => this.emit(event, { metadata: domEvent === 'loadedmetadata' });
       video.addEventListener(domEvent, listener);
       this.bindings.push([domEvent, listener]);
     }
@@ -15,7 +15,7 @@ export class HTML5VideoAdapter {
     this.listeners.get(event).add(listener);
     return () => this.listeners.get(event)?.delete(listener);
   }
-  emit(event) { this.listeners.get(event)?.forEach(listener => listener()); }
+  emit(event, detail) { this.listeners.get(event)?.forEach(listener => listener(detail)); }
   load(source) {
     this.video.pause();
     this.video.removeAttribute('src');

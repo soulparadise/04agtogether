@@ -19,7 +19,6 @@ export class RoomConnection {
         await connection.whenReady();
         // Keep the position the owner was watching before creating the room.
         const frame = { tabId: -1, frameId: 0, pageURL }; connection.bind(frame);
-        if (initial.selection) await connection.select(initial.selection);
         if (Number.isFinite(initial.duration) && initial.duration > 0) await connection.content(frame, { type: 'intent', action: 'metadata', duration: initial.duration });
         await connection.content(frame, { type: 'intent', action: initial.playing ? 'play' : 'seek', position: Number.isFinite(initial.position) ? initial.position : 0 });
         connection.binding = null;
@@ -70,20 +69,6 @@ export class RoomConnection {
     this.deliver({ type: 'state', state: this.state });
   }
   deliver(message) { if (this.binding) this.send(this.binding, { ...message, owner: Boolean(this.owner) }); }
-  async select(selection) {
-    if (!this.owner || !this.connected) return { ok: false };
-    const pageURL = this.state.source?.url;
-    const revision = this.selectionRevision = (this.selectionRevision || 0) + 1;
-    const task = this.queue.then(async () => {
-      if (!this.connected || revision !== this.selectionRevision || !samePage(pageURL, this.state.source?.url)) return { ok: false };
-      const current = this.state.source?.selection;
-      if (JSON.stringify({ player: current?.player, voice: current?.voice }) === JSON.stringify(selection)) return { ok: true, state: this.state };
-      const sourceId = this.state.sourceId;
-      const reply = await this.request('playback:selection', { selection, sourceId, expectedVersion: this.state.version, ownerToken: this.pair.ownerToken });
-      if (reply.state) this.accept(reply.state); return publicPlaybackReply(reply);
-    });
-    this.queue = task.catch(() => {}); return task;
-  }
   bind(binding) {
     if (!this.connected || this.state?.source?.type !== 'extension') throw new Error('В комнате выберите режим Extension и страницу видео.');
     if (!samePage(binding.pageURL, this.state.source.url)) throw new Error('Откройте именно страницу видео, выбранную владельцем комнаты.');
@@ -95,7 +80,6 @@ export class RoomConnection {
     if (!samePage(this.binding.pageURL, this.state?.source?.url) || this.state.source.type !== 'extension') return { ok: false, error: { message: 'Источник в комнате изменился. Отключите плеер и откройте новую страницу.' } };
     if (message.type === 'attach') return { ok: true, state: this.state, connected: this.connected, owner: this.owner };
     if (message.type === 'status') { this.videoStatus = String(message.status || '').slice(0, 160); return { ok: true }; }
-    if (message.type === 'selection') return this.select(message.selection);
     if (!this.connected) return { ok: false, error: { message: 'Нет соединения с комнатой.' } };
     if (message.type === 'get') {
       const reply = await this.request('playback:get', {}); if (reply.state) this.accept(reply.state);
@@ -125,15 +109,6 @@ export class RoomConnection {
     this.queue = task.catch(() => {}); return task;
   }
   status() { return { roomId: this.pair.roomId, appOrigin: this.pair.origin, invitation: `${this.pair.origin}/room/${this.pair.roomId}`, title: this.title || '', connected: this.connected, owner: Boolean(this.owner), player: this.videoStatus || 'Ожидаем плеер…', error: this.error || '', bound: Boolean(this.binding), room: this.room ? { ...this.room, playback: this.state } : null, participantId: this.pair.participantId }; }
-  async configureAccess(settings) {
-    if (!this.owner || !this.connected) return { ok: false, error: { message: 'Нужны права владельца и связь с комнатой.' } };
-    const app = new URL(this.pair.origin);
-    if (app.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(app.hostname)) throw new Error('Пароль можно передавать только через HTTPS.');
-    const response = await fetch(this.pair.origin + '/api/rooms/access', { method: 'POST', redirect: 'error', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, ...this.pair }) });
-    const reply = await response.json();
-    if (reply.ok) { this.room = reply.room; this.accept(reply.room.playback); }
-    return reply;
-  }
   async setSource(options) {
     if (!this.owner || !this.connected) return { ok: false, error: { message: 'Источник меняет только владелец.' } };
     const task = this.queue.then(async () => {

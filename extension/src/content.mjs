@@ -2,7 +2,7 @@ import { PlaybackSync } from '../../frontend/src/player/PlaybackSync.mjs';
 import { ForeignVideoAdapter } from './ForeignVideoAdapter.mjs';
 import { samePage } from './security.mjs';
 import { childFrameLayout } from './frame-layout.mjs';
-import { readSelection, matchesSelection, selectionHint, applyVoice, applyPlayer } from './source-selection.mjs';
+import { readSelection } from './source-selection.mjs';
 
 // Runs exclusively in Chrome's ISOLATED world. No credentials, DOM bridge,
 // postMessage listener or page-script injection.
@@ -10,8 +10,32 @@ globalThis.__04agtogetherContent?.destroy();
 let sync, adapter, video, observer, timer, overlay, statusText, startButton, active = false, owner = false, state, metadataSource, selectedPage;
 const bindings = [];
 let lastDiscovered, lastFrameLayout = '', discoveryTimer;
-let voiceAttempt, lastSelection = '', targetSelection;
+let lastSelection = '';
 let lifecycle = 0;
+let permissionNotice, permissionMessage, permissionButton;
+function showPermissionNotice(origins) {
+  if (!origins?.length) { permissionNotice?.remove(); permissionNotice = null; return; }
+  if (!permissionNotice) {
+    permissionNotice = document.createElement('div');
+    permissionNotice.style.cssText = 'position:fixed;right:16px;top:16px;z-index:2147483647;max-width:300px';
+    const root = permissionNotice.attachShadow({ mode: 'closed' });
+    const box = document.createElement('div');
+    box.style.cssText = 'padding:14px;background:#142019;color:#edf5de;border:1px solid #a2b888;border-radius:10px;font:14px/1.5 system-ui;box-shadow:0 4px 20px #0006';
+    const title = document.createElement('strong'); title.textContent = '04agtogether · плеер не подключён';
+    permissionMessage = document.createElement('p');
+    permissionButton = document.createElement('button'); permissionButton.textContent = 'Открыть расширение для разрешения';
+    permissionButton.style.cssText = 'padding:8px;cursor:pointer';
+    permissionButton.addEventListener('click', () => {
+      permissionButton.disabled = true;
+      void chrome.runtime.sendMessage({ target: 'background', type: 'open-player-permissions' }).then(reply => {
+        if (!reply?.ok) throw new Error(reply?.error?.message || 'Не удалось открыть расширение.');
+      }).catch(() => { permissionMessage.textContent = 'Откройте 04agtogether кнопкой расширений браузера и разрешите доступ к плееру. Можно повторить попытку.'; })
+        .finally(() => { if (permissionButton) permissionButton.disabled = false; });
+    });
+    box.append(title, permissionMessage, permissionButton); root.append(box); document.documentElement.append(permissionNotice);
+  }
+  permissionMessage.textContent = `Для совместного просмотра нужен доступ к плееру: ${origins.map(origin => new URL(origin).hostname).join(', ')}. В открывшемся расширении нажмите «Разрешить плеер». Без разрешения синхронизация не работает. Видео можно управлять как обычно.`;
+}
 const technicalPauses = new WeakSet(), ignoredPauseEvents = new WeakSet();
 const engine = payload => chrome.runtime.sendMessage({ target: 'engine', type: 'content', payload });
 function videos() {
@@ -33,7 +57,7 @@ function playbackStatus(ownAdapter, text) {
   } else if (!ownAdapter.isReady() && (ownAdapter.needsGesture || (ownAdapter.warmupAt && performance.now() - ownAdapter.warmupAt > 3000))) {
     startButton.hidden = false;
     status(ownAdapter.needsGesture ? 'Браузер не разрешил автоматический запуск. Нажмите «Начать просмотр».' : 'Плеер ещё не загрузил видео. Нажмите «Начать просмотр», чтобы запустить загрузку на сайте.');
-  } else status(state?.source?.selection && !readSelection(document)?.voice ? `${text} · Озвучка не определена` : text);
+  } else status(text);
 }
 function panel() {
   if (overlay) return;
@@ -95,19 +119,6 @@ async function metadata() {
 }
 function selectVideo() {
   if (!active) return;
-  const desired = state?.source?.selection;
-  const actual = readSelection(document);
-  if (owner && desired && !matchesSelection(actual, desired)) { releaseVideo(true); status('Определяем выбранные плеер и озвучку владельца…'); return; }
-  if (!owner && desired) {
-    if (!matchesSelection(actual, desired)) {
-      releaseVideo(true); status(selectionHint(actual, desired));
-      if (voiceAttempt !== state.sourceId) {
-        voiceAttempt = state.sourceId;
-        applyVoice(document, desired);
-      }
-      return;
-    }
-  }
   const selected = videos()[0];
   if (video?.isConnected && video === selected) { placePanel(); initializeVideo(); return; }
   if (!selected) { releaseVideo(); placePanel(); status('Ожидаем загрузку выбранного плеера. Если он не появится, запустите его на странице или проверьте разрешение iframe в расширении.'); return; }
@@ -127,8 +138,8 @@ function selectVideo() {
   });
   for (const [event, action] of Object.entries({ play: 'play', pause: 'pause', seeked: 'seek' })) {
     const listener = async domEvent => {
-      if (ignoredPauseEvents.has(domEvent) || ownAdapter.consume(event) || !active || adapter !== ownAdapter || !ownAdapter.video.isConnected || videos()[0] !== ownAdapter.video || ownAdapter.video.readyState < 1 || (event === 'pause' && !ownAdapter.video.paused) || (owner && state?.source?.selection && !matchesSelection(readSelection(document), state.source.selection))) return;
-      if (!owner) { sync?.apply(true); return; }
+      if (ignoredPauseEvents.has(domEvent) || ownAdapter.consume(event) || !active || adapter !== ownAdapter || !ownAdapter.video.isConnected || videos()[0] !== ownAdapter.video || ownAdapter.video.readyState < 1 || (event === 'pause' && !ownAdapter.video.paused)) return;
+      if (!owner) { sync?.apply(); return; }
       // Do not let an old server snapshot undo an in-progress local gesture.
       ownAdapter.intentPending++;
       try {
@@ -153,15 +164,13 @@ async function start() {
     acceptState(reply.state); selectVideo(); sync?.setConnected(reply.connected); void sync?.refresh(); return;
   }
   stop(); active = true; owner = reply.owner; state = reply.state; selectedPage = state.source.url; panel();
-  // A newly opened viewer tab already has a cached source; it must not wait
-  // for another Owner command before applying the initial player choice.
-  if (!owner && state.source.selection) { targetSelection = state.source.selection; applyPlayer(document, targetSelection); }
   observer = new MutationObserver(selectVideo); observer.observe(document.documentElement, { childList: true, subtree: true });
   timer = setInterval(() => { notifyDiscovery(); selectVideo(); void metadata(); }, 1000);
   selectVideo(); sync?.setConnected(reply.connected);
 }
 function stop() {
-  lifecycle++; voiceAttempt = null; targetSelection = null;
+  showPermissionNotice([]);
+  lifecycle++;
   active = false; observer?.disconnect(); clearInterval(timer); releaseVideo(); overlay?.remove(); overlay = null; statusText = null; startButton = null;
 }
 function acceptState(next) {
@@ -169,36 +178,16 @@ function acceptState(next) {
   if (next.source?.type !== 'extension' || !samePage(next.source.url, selectedPage)) { releaseVideo(true); stop(); panel(); status('Источник изменился. Откройте выбранную владельцем страницу и подключите её плеер.'); return; }
   const changed = state?.sourceId !== next.sourceId;
   state = next;
-  if (changed) { releaseVideo(true); voiceAttempt = null; selectVideo(); }
+  if (changed) { releaseVideo(true); selectVideo(); }
   else if (sync) sync.accept(state);
   else selectVideo();
 }
-async function confirmSelection(message) {
-  if (!active) return { ok: false, error: { message: 'Новый плеер ещё подключается. Повторите подтверждение.' } };
-  const latest = await engine({ type: 'get' });
-  if (!latest?.ok) return latest || { ok: false };
-  acceptState(latest.state);
-  if (!active || (message.sourceId && message.sourceId !== state.sourceId)) return { ok: false, error: { message: 'Владелец снова изменил источник. Проверьте новый выбор и повторите подтверждение.' } };
-  const actual = readSelection(document), desired = state.source?.selection;
-  if (!desired || !matchesSelection(actual, desired)) {
-    const hint = desired ? selectionHint(actual, desired) : 'Выбор владельца пока не определён.';
-    status(hint); return { ok: false, error: { message: hint } };
-  }
-  // A click never fabricates a matching voice. Each attempt checks the live DOM.
-  voiceAttempt = null; selectVideo();
-  if (!sync || video !== videos()[0]) return { ok: false, error: { message: 'Выбранный плеер ещё не создал доступное видео. Запустите его на сайте и повторите подтверждение.' } };
-  initializeVideo(true); void sync.refresh();
-  return { ok: true, pending: !adapter.isReady() || Boolean(adapter.needsGesture) };
-}
 const receive = (message, sender, reply) => {
   if (message.target !== 'player' || sender.id !== chrome.runtime.id) return;
+  if (message.type === 'permission-notice') { showPermissionNotice(message.origins); reply({ ok: true }); return; }
   if (message.type === 'discover') { const found = videos(), first = found[0], selection = readSelection(document); reply({ active, sourceId: state?.sourceId, syncAttached: Boolean(sync && first === video), ready: first?.readyState ?? null, count: found.length, score: first ? area(first) : 0, childFrames: childFrameLayout(document), selection, initial: first ? { position: first.currentTime, duration: Number.isFinite(first.duration) ? first.duration : null, playing: !first.paused && !first.ended, selection } : {} }); }
   else if (message.type === 'start') { void start().then(() => reply({ ok: active })).catch(() => reply({ ok: false })); return true; }
   else if (message.type === 'stop') { releaseVideo(Boolean(message.pause)); stop(); reply({ ok: true }); }
-  else if (message.type === 'source-target') { if (!message.selection || !targetSelection || message.selection.version >= targetSelection.version) { targetSelection = message.selection; applyPlayer(document, targetSelection); } reply({ ok: true }); }
-  else if (message.type === 'confirm-selection') {
-    void confirmSelection(message).then(reply).catch(() => reply({ ok: false, error: { message: 'Не удалось проверить плеер. Повторите попытку.' } })); return true;
-  }
   else if (message.type === 'connection') { sync?.setConnected(message.connected); if (message.connected) void sync?.refresh(); else status('Нет связи — восстанавливаем синхронизацию…'); }
   else if (message.type === 'state' && active) {
     acceptState(message.state);
@@ -224,7 +213,6 @@ document.addEventListener('pause', onTechnicalPause, true);
 document.addEventListener('loadedmetadata', onReady, true);
 document.addEventListener('canplay', onReady, true);
 const discovery = new MutationObserver(() => {
-  if (targetSelection) applyPlayer(document, targetSelection);
   if (!discoveryTimer) discoveryTimer = setTimeout(() => { discoveryTimer = null; notifyDiscovery(); }, 100);
 });
 discovery.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'src'] });

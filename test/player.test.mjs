@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HTML5VideoAdapter } from '../frontend/src/player/HTML5VideoAdapter.mjs';
 import { PlaybackSync } from '../frontend/src/player/PlaybackSync.mjs';
+import { ForeignVideoAdapter } from '../extension/src/ForeignVideoAdapter.mjs';
 
 class FakeVideo extends EventTarget {
   currentTime = 0; duration = 90; readyState = 4; paused = true; ended = false; src = ''; volume = 0.4; muted = true; loads = 0; rejectPlay = false;
@@ -130,6 +131,49 @@ test('periodic checks do not keep seeking during a stalled viewer buffer', async
   env.video.dispatchEvent(new Event('canplay')); await flush();
   assert.ok(Math.abs(env.video.currentTime - 15) < 0.01);
   assert.ok(env.requests.every(request => request.event === 'playback:get'));
+});
+
+test('repeated canplay events with small drift do not turn HLS readiness into forced seeks', async t => {
+  const env = setup(t);
+  env.sync.accept(snapshot({ status: 'playing' })); await flush();
+  for (let i = 0; i < 4; i++) {
+    env.advance(2000);
+    env.video.currentTime = 12 + i * 2 - 0.2;
+    const before = env.video.currentTime;
+    env.video.dispatchEvent(new Event('canplay')); await flush();
+    assert.equal(env.video.currentTime, before, 'ready is not a new room seek command');
+  }
+});
+
+test('a duration-only revision preserves smooth playback rather than forcing a small seek', async t => {
+  const env = setup(t);
+  env.sync.accept(snapshot({ status: 'playing' })); await flush();
+  env.advance(2000); env.video.currentTime = 11.8;
+  env.sync.accept(snapshot({ version: 2, status: 'playing', basePosition: 12, position: 12, updatedAt: 502000, serverNow: 502000, duration: 95 }));
+  assert.equal(env.video.currentTime, 11.8);
+  env.sync.accept(snapshot({ version: 3, status: 'playing', basePosition: 40, position: 40, updatedAt: 502000, serverNow: 502000, duration: 95 }));
+  assert.equal(env.video.currentTime, 40, 'An explicit room seek still applies');
+});
+
+test('foreign HLS recovery keeps its buffer and avoids overlapping seeks; explicit room seek still works', async t => {
+  let now = 1000, bufferEnd = 11;
+  const video = new FakeVideo();
+  video.buffered = { length: 1, start: () => 0, end: () => bufferEnd };
+  const adapter = new ForeignVideoAdapter(video, () => now);
+  const sync = new PlaybackSync({ adapter, intervalMs: 0, now: () => now, request: async () => ({ ok: false }) });
+  t.after(() => sync.destroy());
+  sync.accept(snapshot({ status: 'playing' })); await flush();
+  now += 2000; video.currentTime = 11;
+  sync.apply();
+  assert.equal(video.currentTime, 11, 'Do not seek outside the currently recovered buffer every polling interval');
+  video.dispatchEvent(new Event('canplay')); await flush();
+  assert.equal(video.currentTime, 11);
+  bufferEnd = 30; video.seeking = true;
+  sync.apply(); assert.equal(video.currentTime, 11, 'Do not interrupt an unfinished local seek');
+  video.seeking = false;
+  sync.apply(); assert.equal(video.currentTime, 12, 'Catch up once the target is buffered');
+  sync.accept(snapshot({ version: 2, status: 'playing', basePosition: 40, position: 40, updatedAt: 502000, serverNow: 502000 }));
+  assert.equal(video.currentTime, 40);
 });
 
 test('diagnostics are opt-in and measure corrections plus fresh-state reconnect recovery', async t => {

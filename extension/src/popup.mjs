@@ -1,8 +1,10 @@
 import { webOrigin, samePage, permissionPattern } from './security.mjs';
 import { DEFAULT_APP_ORIGIN, APP_ORIGINS } from '../config.mjs';
+import { missingPermissionPatterns, requestMissingPermissions } from './permission-request.mjs';
 const $ = id => document.getElementById(id);
 const background = message => chrome.runtime.sendMessage({ target: 'background', ...message });
 let tab, state, busy = false, savedNickname = '', extraOrigins = [];
+let watchPermissions = [];
 function fail(error) { $('error').textContent = error?.message || 'Действие не выполнено.'; }
 async function refresh() {
   state = await background({ type: 'popup-state' });
@@ -11,25 +13,19 @@ async function refresh() {
   $('room').textContent = state.title || '';
   $('connection').textContent = state.roomId ? `${state.connected ? 'На связи' : 'Восстанавливаем связь…'} · ${state.owner ? 'Owner · Владелец' : 'Viewer · Зритель'}` : 'Откройте фильм и пригласите друзей';
   if (state.roomId) $('player').textContent = state.player || 'Ищем плеер…';
-  const selection = state.room?.playback?.source?.selection;
-  $('selection').hidden = !state.roomId;
-  if (state.roomId) {
-    $('source-choice').textContent = `${selection?.player.label || 'Плеер не определён — укажи выбранный источник'} · Озвучка: ${selection?.voice?.label || 'не определена'}`;
-    $('owner-voice').hidden = !state.owner; $('confirm-choice').hidden = state.owner;
-    if (document.activeElement !== $('voice-label')) $('voice-label').value = selection?.voice?.label || '';
-    if (document.activeElement !== $('player-choice')) $('player-choice').value = selection?.player.id || '';
-  }
   $('nickname-row').hidden = Boolean(savedNickname || state.pending || state.roomId);
   const anotherFilm = tab?.url && !samePage(tab.url, state.room?.playback?.source?.url);
+  watchPermissions = await missingPermissionPatterns(chrome, state.pending ? [state.pending.appOrigin, state.pending.filmURL] : [DEFAULT_APP_ORIGIN, tab?.url, ...extraOrigins]);
   $('watch').hidden = Boolean(state.roomId && !state.pending && !anotherFilm);
   $('watch').textContent = state.pending ? 'Открыть фильм' : 'Смотреть вместе';
   $('watch').disabled = busy || (!state.pending && (!tab?.url || APP_ORIGINS.includes(new URL(tab.url).origin)));
   $('copy').hidden = !state.owner || !state.roomId;
   $('disconnect').hidden = !state.roomId;
   $('invitation').value = state.invitation || '';
-  $('hint').textContent = state.pending ? 'Chrome запросит доступ к сайту. После разрешения фильм откроется и подключится автоматически.' : state.roomId ? 'Управляйте видео обычными кнопками сайта.' : 'Видео загружается с исходного сайта. Первый доступ к сайту нужно разрешить в Chrome.';
+  $('hint').textContent = state.pending ? 'Chrome запросит доступ к сайту. После разрешения фильм откроется и подключится автоматически.' : state.roomId ? 'Play/Pause и позиция общие. Плеер и озвучку каждый выбирает на сайте самостоятельно.' : 'Видео загружается с исходного сайта. Первый доступ к сайту нужно разрешить в Chrome.';
   if (state.error) fail(new Error(state.error));
-  frames(state.neededOrigins || []);
+  const needed = await missingPermissionPatterns(chrome, state.neededOrigins || []);
+  frames((state.neededOrigins || []).filter(origin => needed.includes(permissionPattern(origin))));
 }
 function frames(origins) {
   const signature = origins.join('|');
@@ -52,9 +48,8 @@ $('watch').addEventListener('click', () => {
   if (busy) return;
   const nickname = savedNickname || $('nickname').value.trim();
   if (!state?.pending && !nickname) { $('nickname-row').hidden = false; $('nickname').focus(); return; }
-  const urls = state.pending ? [state.pending.appOrigin, state.pending.filmURL] : [DEFAULT_APP_ORIGIN, tab.url, ...extraOrigins];
   // Called immediately inside the click: no awaited work loses the user gesture.
-  const grant = chrome.permissions.request({ origins: [...new Set(urls.map(permissionPattern))] });
+  const grant = requestMissingPermissions(chrome, watchPermissions);
   busy = true; $('watch').disabled = true; $('error').textContent = '';
   void grant.then(async granted => {
     if (!granted) throw new Error('Доступ к выбранному сайту не разрешён.');
@@ -69,13 +64,6 @@ $('copy').addEventListener('click', async () => {
   catch { $('invitation').hidden = false; $('invitation').select(); }
 });
 $('disconnect').addEventListener('click', () => { void background({ type: 'disconnect' }).then(refresh).catch(fail); });
-$('save-voice').addEventListener('click', () => {
-  void background({ type: 'select-voice', player: $('player-choice').value, label: $('voice-label').value }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Не удалось обновить источник.'); return refresh(); }).catch(fail);
-});
-$('confirm-choice').addEventListener('click', () => {
-  $('error').textContent = '';
-  void background({ type: 'confirm-selection' }).then(reply => { if (!reply?.ok) throw new Error(reply?.error?.message || 'Сначала выбери источник на сайте.'); $('error').textContent = ''; return refresh(); }).catch(fail);
-});
 void (async () => {
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try { webOrigin(tab?.url); } catch { tab = null; }

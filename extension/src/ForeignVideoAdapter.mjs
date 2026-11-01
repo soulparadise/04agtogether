@@ -4,6 +4,15 @@ import { HTML5VideoAdapter } from '../../frontend/src/player/HTML5VideoAdapter.m
 export class ForeignVideoAdapter extends HTML5VideoAdapter {
   constructor(video, now = () => performance.now()) { super(video); this.now = now; this.expected = new Map(); this.intentPending = 0; }
   load() {}
+  isSeeking() { return Boolean(this.video.seeking); }
+  canCorrectTo(time) {
+    // Do not discard the site's recovered HLS buffer for periodic correction.
+    // Explicit room seeks still apply immediately.
+    const ranges = this.video.buffered;
+    if (!ranges) return true;
+    for (let i = 0; i < ranges.length; i++) if (time >= ranges.start(i) && time < ranges.end(i) - 0.1) return true;
+    return false;
+  }
   mark(event, position) { this.expected.set(event, { until: this.now() + 2000, position }); }
   consume(event) {
     const expected = this.expected.get(event);
