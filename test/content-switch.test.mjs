@@ -29,7 +29,9 @@ async function fixture(t, owner = false) {
     play() {
       if (blocked) return Promise.reject(Object.assign(new Error('gesture required'), { name: 'NotAllowedError' }));
       if (!this.paused) return Promise.resolve();
-      this.paused = false; this.fire('play'); return Promise.resolve();
+      this.paused = false; this.fire('play');
+      setTimeout(() => { if (!this.paused) { this.currentTime += 0.05; this.fire('timeupdate'); } }, 50);
+      return Promise.resolve();
     }
     pause() { if (this.paused) return; this.paused = true; queueMicrotask(() => this.fire('pause')); }
   }
@@ -85,6 +87,8 @@ async function fixture(t, owner = false) {
         receive({ target: 'player', type: 'state', state }, { id: 'fixture' }, () => {});
       } else selected.fire('loadedmetadata');
       for (let i = 0; i < 5; i++) await tick();
+      if (player === 'allplay' && status === 'playing' && !blocked) control.click();
+      await new Promise(resolve => setTimeout(resolve, 60));
       return old;
     },
     wrongPlayer() { family = family === 'venom' ? 'allplay' : 'venom'; selected.family = family; }
@@ -105,11 +109,11 @@ test('permission notice explains the host, survives repeated discovery and disap
   assert.equal(f.sent.length, 0);
 });
 
-test('local player switches prime lazy Allplay and keep room playback without matching or confirming the Owner choice', async t => {
+test('local player switches and native Allplay start keep room playback without matching the Owner choice', async t => {
   const f = await fixture(t);
   assert.equal(f.video.paused, false);
   const old = await f.switchTo(2, 'allplay', 0, 'playing', 70);
-  assert.ok(f.primed > 0, 'Allplay must be primed before metadata, otherwise both sides wait forever');
+  assert.ok(f.primed > 0, 'Native Play primes Allplay before synchronizing');
   assert.equal(old.paused, true); assert.equal(f.video.paused, false); assert.ok(f.video.currentTime >= 70);
   for (const [id, player] of [[3, 'venom'], [4, 'allplay'], [5, 'venom']]) {
     await f.switchTo(id, player, player === 'allplay' ? 0 : 4, 'playing', 70 + id, false, true);
@@ -127,10 +131,11 @@ test('technical owner pause during reuse never becomes a shared Pause; blocked l
   assert.equal(owner.sent.filter(command => command.action === 'pause').length, 0);
   const viewer = await fixture(t);
   viewer.block(true); await viewer.switchTo(2, 'allplay', 0);
-  assert.ok(viewer.statuses.some(status => status.includes('Браузер не разрешил')));
+  assert.ok(viewer.statuses.some(status => status.includes('Начать просмотр')));
   viewer.block(false);
-  // A real user gesture is handled by the existing in-video button. A site
-  // metadata event here models loading after the user presses native Play.
+  // Metadata alone must not retry a blocked play; model the native user Play.
   viewer.video.readyState = 4; viewer.video.fire('loadedmetadata');
-  await tick(); assert.equal(viewer.video.paused, false);
+  await viewer.video.play();
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(viewer.video.paused, false);
 });

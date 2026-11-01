@@ -13,7 +13,7 @@ export class PlaybackSync {
     this.calibrationAttempts = 0;
     this.diagnosticListeners = new Set();
     this.unsubscribers = [
-      adapter.on('ready', detail => { this.failed = false; this.buffering = false; this.onError(''); this.apply(Boolean(detail?.metadata)); this.onMetadata(); void this.refresh(); }),
+      adapter.on('ready', detail => { this.failed = false; this.buffering = false; this.onError(''); this.apply(Boolean(detail?.metadata || detail?.initialClock)); this.onMetadata(); void this.refresh(); }),
       adapter.on('duration', () => this.onMetadata()),
       adapter.on('buffering', () => { this.buffering = true; onStatus('Буферизация — догоняем общий просмотр…'); }),
       adapter.on('playing', () => { this.buffering = false; this.apply(); }),
@@ -70,6 +70,7 @@ export class PlaybackSync {
     if (this.destroyed || !this.state?.source) { this.onStatus('Добавьте видео, чтобы начать просмотр'); return; }
     if (this.failed) { this.onStatus('Видео недоступно'); return; }
     if (!this.adapter.isReady()) { this.onStatus('Загружаем видео…'); return; }
+    if (this.adapter.isSeeking?.()) { this.onStatus('Выравниваем позицию…'); return; }
     // Seeking repeatedly into unbuffered media can prevent buffer recovery.
     // A new explicit command still applies; canplay performs one fresh catch-up.
     if (this.buffering && this.state.status === 'playing' && !force && !gesture) {
@@ -80,11 +81,12 @@ export class PlaybackSync {
     const threshold = this.state.status === 'playing' ? 0.45 : 0.08;
     const correctionDeferred = !force && (this.adapter.isSeeking?.() || this.adapter.canCorrectTo?.(target) === false);
     const playingStatus = () => correctionDeferred && drift > threshold ? 'Ждём буфер для выравнивания позиции…' : this.samples.length < 3 ? 'Уточняем синхронизацию…' : 'Синхронизировано';
-    if (!correctionDeferred && drift > (force ? 0.08 : threshold) && (force || this.now() - this.lastSeek > 1500)) {
+    if (!gesture && !correctionDeferred && drift > (force ? 0.08 : threshold) && (force || this.now() - this.lastSeek > 1500)) {
       this.adapter.seek(target);
       if (this.diagnosticsEnabled) this.corrections++;
       this.lastSeek = this.now();
     }
+    if (this.adapter.isSeeking?.()) { this.onStatus('Выравниваем позицию…'); return; }
     const duration = this.state.duration ?? this.adapter.getDuration();
     const ended = duration !== null && target >= duration;
     if (this.state.status !== 'playing' || ended) {
@@ -96,7 +98,7 @@ export class PlaybackSync {
     }
     if (this.blocked && !gesture) return;
     if (gesture) { this.blocked = false; this.onBlocked(false); }
-    if (this.adapter.getPlaybackState() !== 'playing' && !this.pendingPlay) {
+    if ((gesture || this.adapter.getPlaybackState() !== 'playing') && !this.pendingPlay) {
       const sourceId = this.state.sourceId;
       const pending = {};
       this.pendingPlay = pending;
@@ -142,7 +144,14 @@ export class PlaybackSync {
       }
     }
   }
-  startViewing() { this.apply(true, true); void this.refresh(); }
+  startViewing() {
+    // Spend the actual user gesture on play, before an asynchronous seek can
+    // consume it. paused=false alone does not prove autoplay was permitted.
+    if (this.state?.status === 'playing' && !this.adapter.isSeeking?.()) {
+      this.apply(false, true);
+    } else this.apply(true, true);
+    void this.refresh();
+  }
   subscribeDiagnostics(listener) {
     if (!this.diagnosticsEnabled) return () => {};
     this.diagnosticListeners.add(listener);

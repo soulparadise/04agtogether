@@ -51,6 +51,11 @@ function status(text) {
 }
 function playbackStatus(ownAdapter, text) {
   if (adapter !== ownAdapter || !text) return;
+  if (ownAdapter.waitForClock && !ownAdapter.warmupAt && ownAdapter.video.paused && !ownAdapter.video.error) {
+    startButton.hidden = false;
+    status('Нажмите «Начать просмотр», чтобы запустить плеер сайта.');
+    return;
+  }
   if (ownAdapter.video.error) {
     const explanations = { 1: 'загрузка прервана', 2: 'сетевая ошибка загрузки', 3: 'ошибка декодирования', 4: 'формат или источник не поддерживается' };
     status(`Ошибка видео сайта: ${explanations[ownAdapter.video.error.code] || `код ${ownAdapter.video.error.code}`}. Проверьте воспроизведение на сайте или выберите другой источник.`);
@@ -98,10 +103,17 @@ function initializeVideo(retry = false) {
   // Allplay's HLS loader is idle until its normal Play control is activated.
   // This only primes the current video; PlaybackSync still decides position/status.
   if (!current.video.matches('video.allplay__video')) return;
+  if (!retry) {
+    if (current.video.paused) {
+      startButton.hidden = false;
+      status('Нажмите «Начать просмотр», чтобы запустить плеер сайта.');
+    }
+    return;
+  }
   current.warmupAt = performance.now(); current.needsGesture = false;
   const controls = [...document.querySelectorAll('button.allplay__control--overlaid[data-allplay="play"]')].filter(button => area(button) > 0);
   current.mark('play');
-  if (current.video.paused && controls.length === 1) controls[0].click();
+  if (current.video.paused && controls.length === 1) { controls[0].click(); return; }
   let play;
   try { play = current.play(); } catch (error) { play = Promise.reject(error); }
   Promise.resolve(play).catch(error => {

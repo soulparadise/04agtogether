@@ -2,8 +2,25 @@ import { HTML5VideoAdapter } from '../../frontend/src/player/HTML5VideoAdapter.m
 
 // Same PlaybackSync interface; never replaces a site's URL, reloads or clears it.
 export class ForeignVideoAdapter extends HTML5VideoAdapter {
-  constructor(video, now = () => performance.now()) { super(video); this.now = now; this.expected = new Map(); this.intentPending = 0; }
+  constructor(video, now = () => performance.now()) {
+    super(video); this.now = now; this.expected = new Map(); this.intentPending = 0;
+    this.waitForClock = Boolean(video.matches?.('video.allplay__video'));
+    let previous = { time: video.currentTime, at: this.now() };
+    const clock = () => {
+      const next = { time: video.currentTime, at: this.now() };
+      const elapsed = (next.at - previous.at) / 1000, advanced = next.time - previous.time;
+      if (this.waitForClock && !video.paused && !video.seeking && elapsed > 0.03 && advanced > 0.01 && advanced <= elapsed * 2 + 0.1) {
+        this.waitForClock = false;
+        this.emit('ready', { initialClock: true });
+      }
+      previous = next;
+    };
+    video.addEventListener('timeupdate', clock); this.bindings.push(['timeupdate', clock]);
+    const afterSeek = () => this.emit('ready', { metadata: false });
+    video.addEventListener('seeked', afterSeek); this.bindings.push(['seeked', afterSeek]);
+  }
   load() {}
+  isReady() { return super.isReady() && !this.waitForClock; }
   isSeeking() { return Boolean(this.video.seeking); }
   canCorrectTo(time) {
     // Do not discard the site's recovered HLS buffer for periodic correction.
@@ -21,7 +38,7 @@ export class ForeignVideoAdapter extends HTML5VideoAdapter {
     this.expected.delete(event); return true;
   }
   play() {
-    if (this.intentPending) return Promise.resolve();
+    if (this.intentPending || this.isSeeking()) return Promise.resolve();
     if (this.video.paused) this.mark('play');
     return super.play();
   }

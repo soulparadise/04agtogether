@@ -18,6 +18,67 @@ class FakeVideo extends EventTarget {
 const snapshot = (patch = {}) => ({ source: { type: 'html5', url: 'https://example.invalid/test.mp4' }, sourceId: 'source-a', version: 1, status: 'paused', basePosition: 10, position: 10, updatedAt: 500000, serverNow: 500000, duration: 90, ...patch });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test('Allplay metadata alone cannot start sync seeks before its native media clock advances', () => {
+  let now = 0;
+  const video = new FakeVideo(); video.matches = () => true;
+  const adapter = new ForeignVideoAdapter(video, () => now);
+  assert.equal(adapter.isReady(), false);
+  video.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(adapter.isReady(), false);
+  video.paused = false; video.currentTime = 0.05; now = 50;
+  video.dispatchEvent(new Event('timeupdate'));
+  assert.equal(adapter.isReady(), true);
+  adapter.destroy();
+});
+
+test('first natural Allplay clock catches up outside the current buffer exactly once', t => {
+  let now = 0;
+  const video = new FakeVideo(); video.matches = () => true;
+  video.buffered = { length: 1, start: () => 0, end: () => 2 };
+  const adapter = new ForeignVideoAdapter(video, () => now);
+  const sync = new PlaybackSync({ adapter, now: () => now, intervalMs: 0, request: async () => ({ ok: false }) });
+  t.after(() => { sync.destroy(); adapter.destroy(); });
+  sync.accept(snapshot({ status: 'playing', position: 60, basePosition: 60, source: { type: 'extension', url: 'https://example.invalid/film' } }));
+  assert.equal(video.currentTime, 0);
+  video.paused = false; video.currentTime = 0.05; now = 50;
+  video.dispatchEvent(new Event('timeupdate'));
+  assert.ok(video.currentTime >= 60, 'Initial catch-up must load the room position, not wait for minutes of buffer');
+  video.currentTime = 0.1; now = 100;
+  video.dispatchEvent(new Event('timeupdate'));
+  assert.equal(video.currentTime, 0.1, 'Ordinary timeupdates must not force further seeks');
+});
+
+test('start viewing spends the gesture on play even if media falsely reports playing', async t => {
+  const env = setup(t);
+  env.sync.accept(snapshot({ status: 'playing' })); await flush();
+  let calls = 0;
+  env.video.paused = false;
+  env.adapter.play = () => { calls++; return Promise.resolve(); };
+  env.sync.blocked = true;
+  env.sync.startViewing();
+  assert.equal(calls, 1);
+  await flush();
+  assert.equal(env.sync.blocked, false);
+});
+
+test('foreign player waits for asynchronous seek completion before playing or seeking again', async t => {
+  const video = new FakeVideo();
+  let position = 0, plays = 0, seeks = 0;
+  Object.defineProperty(video, 'currentTime', { get: () => position, set: value => { position = value; seeks++; video.seeking = true; } });
+  const originalPlay = video.play.bind(video);
+  video.play = () => { assert.equal(video.seeking, false, 'play during an unfinished HLS seek can stall decoding'); plays++; return originalPlay(); };
+  video.seeking = false;
+  const adapter = new ForeignVideoAdapter(video);
+  const sync = new PlaybackSync({ adapter, intervalMs: 0, request: async () => ({ ok: false }) });
+  t.after(() => { sync.destroy(); adapter.destroy(); });
+  sync.accept(snapshot({ status: 'playing', source: { type: 'extension', url: 'https://example.invalid/film' } }));
+  assert.equal(seeks, 1); assert.equal(plays, 0);
+  sync.apply(true); assert.equal(seeks, 1); assert.equal(plays, 0);
+  video.seeking = false; video.dispatchEvent(new Event('seeked'));
+  await flush();
+  assert.equal(plays, 1); assert.equal(video.paused, false);
+});
+
 function setup(t, options = {}) {
   let localNow = 1000;
   const video = new FakeVideo();
