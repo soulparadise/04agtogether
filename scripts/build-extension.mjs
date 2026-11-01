@@ -10,7 +10,7 @@ const identity = JSON.parse(await readFile(new URL('identity.json', root), 'utf8
 const appOrigin = production ? 'https://soulparadise.ru' : process.env.EXTENSION_APP_ORIGIN || 'http://127.0.0.1:5173';
 if (!APP_ORIGINS.includes(appOrigin)) throw new Error('EXTENSION_APP_ORIGIN must be an explicitly trusted app origin');
 const manifest = {
-  manifest_version: 3, name: '04agtogether', version: '0.2.20', minimum_chrome_version: '119',
+  manifest_version: 3, name: '04agtogether', version: '0.2.21', minimum_chrome_version: '119',
   description: 'Совместный просмотр стандартного HTML5-видео в комнате 04agtogether.', key: identity.key,
   permissions: ['activeTab', 'scripting', 'storage', 'offscreen', 'webNavigation'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],

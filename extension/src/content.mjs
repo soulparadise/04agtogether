@@ -12,6 +12,17 @@ const bindings = [];
 let lastDiscovered, lastFrameLayout = '', discoveryTimer;
 let lastSelection = '';
 let lifecycle = 0;
+let panelTimer, panelSignature = '', panelExpired = false;
+function updatePanelVisibility() {
+  if (!overlay) return;
+  const actionable = Boolean(startButton && !startButton.hidden);
+  const signature = `${statusText?.textContent || ''}|${actionable}`;
+  if (signature !== panelSignature) {
+    panelSignature = signature; panelExpired = false; clearTimeout(panelTimer);
+    if (!actionable) panelTimer = setTimeout(() => { panelExpired = true; placePanel(); }, 3000);
+  }
+  overlay.hidden = !(video || videos()[0]) || (!actionable && panelExpired);
+}
 let permissionNotice, permissionMessage, permissionButton;
 function showPermissionNotice(origins) {
   if (!origins?.length) { permissionNotice?.remove(); permissionNotice = null; return; }
@@ -45,8 +56,9 @@ function videos() {
 }
 function area(element) { const rect = element.getBoundingClientRect(); return Math.max(0, rect.width) * Math.max(0, rect.height); }
 function status(text) {
-  if (statusText?.textContent === text) return;
+  if (statusText?.textContent === text) { updatePanelVisibility(); return; }
   if (statusText) statusText.textContent = text;
+  updatePanelVisibility();
   void engine({ type: 'status', status: text }).catch(() => {});
 }
 function playbackStatus(ownAdapter, text) {
@@ -81,7 +93,7 @@ function panel() {
 function placePanel() {
   if (!overlay) return;
   const anchor = video || videos()[0];
-  overlay.hidden = !anchor;
+  updatePanelVisibility();
   if (!anchor) return;
   const full = document.fullscreenElement;
   const parent = full && full !== anchor && full.contains(anchor) ? full : document.documentElement;
@@ -146,7 +158,7 @@ function selectVideo() {
     onState: next => { if (adapter === ownAdapter) state = next; },
     onStatus: text => playbackStatus(ownAdapter, text),
     onError: text => playbackStatus(ownAdapter, text),
-    onBlocked: blocked => { if (startButton) startButton.hidden = !blocked; }, onMetadata: () => void metadata()
+    onBlocked: blocked => { if (startButton) startButton.hidden = !blocked; updatePanelVisibility(); }, onMetadata: () => void metadata()
   });
   for (const [event, action] of Object.entries({ play: 'play', pause: 'pause', seeked: 'seek' })) {
     const listener = async domEvent => {
@@ -181,6 +193,7 @@ async function start() {
   selectVideo(); sync?.setConnected(reply.connected);
 }
 function stop() {
+  clearTimeout(panelTimer); panelSignature = ''; panelExpired = false;
   showPermissionNotice([]);
   lifecycle++;
   active = false; observer?.disconnect(); clearInterval(timer); releaseVideo(); overlay?.remove(); overlay = null; statusText = null; startButton = null;
