@@ -22,7 +22,7 @@ async function refresh() {
   $('copy').hidden = !state.owner || !state.roomId;
   $('disconnect').hidden = !state.roomId;
   $('invitation').value = state.invitation || '';
-  $('hint').textContent = state.pending ? 'Chrome запросит доступ к сайту. После разрешения фильм откроется и подключится автоматически.' : state.roomId ? 'Play/Pause и позиция общие. Плеер и озвучку каждый выбирает на сайте самостоятельно.' : 'Видео загружается с исходного сайта. Первый доступ к сайту нужно разрешить в Chrome.';
+  $('hint').textContent = state.pending ? 'Браузер запросит доступ к сайту. После разрешения фильм откроется и подключится автоматически.' : state.roomId ? 'Play/Pause и позиция общие. Плеер и озвучку каждый выбирает на сайте самостоятельно.' : 'Видео загружается с исходного сайта. Первый доступ к сайту нужно разрешить в браузере.';
   if (state.error) fail(new Error(state.error));
   const needed = await missingPermissionPatterns(chrome, state.neededOrigins || []);
   frames((state.neededOrigins || []).filter(origin => needed.includes(permissionPattern(origin))));

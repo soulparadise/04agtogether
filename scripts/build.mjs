@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, rm, copyFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { build as frontend } from 'vite';
@@ -13,6 +13,9 @@ await rm(output, { recursive: true, force: true });
 await mkdir(path.join(output, 'backend'), { recursive: true });
 // Test MP4/public fixtures are local-only and must not enter a public release.
 await frontend({ root: path.join(repo, 'frontend'), build: { outDir: path.join(output, 'frontend'), emptyOutDir: true, copyPublicDir: false } });
+// Copy the approved product illustration explicitly; local fixtures stay excluded.
+await mkdir(path.join(output, 'frontend/assets'), { recursive: true });
+await copyFile(path.join(repo, 'frontend/public/assets/cyberpunk-noir.webp'), path.join(output, 'frontend/assets/cyberpunk-noir.webp'));
 await backend({
   entryPoints: [path.join(repo, 'backend/app.cjs')],
   outfile: path.join(output, 'backend/app.js'),

@@ -31,11 +31,11 @@ function showPermissionNotice(origins) {
     permissionNotice.style.cssText = 'position:fixed;right:16px;top:16px;z-index:2147483647;max-width:300px';
     const root = permissionNotice.attachShadow({ mode: 'closed' });
     const box = document.createElement('div');
-    box.style.cssText = 'padding:14px;background:#142019;color:#edf5de;border:1px solid #a2b888;border-radius:10px;font:14px/1.5 system-ui;box-shadow:0 4px 20px #0006';
+    box.style.cssText = 'padding:14px;background:#15111c;color:#f6f0f7;border:1px solid #704463;border-radius:10px;font:14px/1.5 system-ui;box-shadow:0 4px 20px #0006';
     const title = document.createElement('strong'); title.textContent = '04agtogether · плеер не подключён';
     permissionMessage = document.createElement('p');
     permissionButton = document.createElement('button'); permissionButton.textContent = 'Открыть расширение для разрешения';
-    permissionButton.style.cssText = 'padding:8px;cursor:pointer';
+    permissionButton.style.cssText = 'padding:8px 12px;cursor:pointer;background:#ff2d91;color:#fff;border:0;border-radius:6px';
     permissionButton.addEventListener('click', () => {
       permissionButton.disabled = true;
       void chrome.runtime.sendMessage({ target: 'background', type: 'open-player-permissions' }).then(reply => {
@@ -81,11 +81,11 @@ function panel() {
   overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;transform:translateY(-50%)';
   const root = overlay.attachShadow({ mode: 'closed' });
-  const box = document.createElement('div'); box.style.cssText = 'max-width:230px;padding:12px;background:#142019;color:#edf5de;border:1px solid #a2b888;border-radius:8px;font:12px/1.5 system-ui;pointer-events:none';
+  const box = document.createElement('div'); box.style.cssText = 'max-width:230px;padding:12px;background:#15111c;color:#f6f0f7;border:1px solid #704463;border-radius:8px;font:12px/1.5 system-ui;pointer-events:none';
   const title = document.createElement('strong'); title.textContent = '04agtogether';
   statusText = document.createElement('p'); statusText.style.margin = '6px 0';
   startButton = document.createElement('button'); startButton.textContent = 'Начать просмотр'; startButton.hidden = true;
-  startButton.style.pointerEvents = 'auto';
+  startButton.style.cssText = 'pointer-events:auto;background:#ff2d91;color:#fff;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;font:inherit';
   startButton.addEventListener('click', () => { if (adapter?.isReady()) sync?.startViewing(); else initializeVideo(true); });
   box.append(title, statusText, startButton); root.append(box); document.documentElement.append(overlay);
   placePanel();

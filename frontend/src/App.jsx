@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import SceneAtmosphere from './SceneAtmosphere.jsx';
 import { io } from 'socket.io-client';
 import VideoPlayer from './player/VideoPlayer.jsx';
 import ExtensionInstall from './player/ExtensionInstall.jsx';
@@ -26,6 +27,8 @@ const roomIdFrom = path => path.match(/^\/room\/([a-f0-9]{32})\/?$/)?.[1];
 export default function App() {
   const socketRef = useRef(null);
   const handoff = useRef(false);
+  const [entryMode, setEntryMode] = useState('');
+  const [inviteLink, setInviteLink] = useState('');
   const [path, setPath] = useState(location.pathname);
   const [connected, setConnected] = useState(false);
   const [room, setRoom] = useState(null);
@@ -188,8 +191,9 @@ export default function App() {
     } catch (problem) { if (!managed) handoff.current = false; setError(problem.message); }
     finally { setOpeningFilm(false); }
   }
-  return <div className="app-shell">
-    <header className="topbar"><a className="brand" href="/" aria-label="04agtogether — главная"><span className="brand-mark" aria-hidden="true">◧</span>04agtogether</a><span className={`connection ${connected ? 'online' : ''}`} role="status"><i />{connected ? 'Соединение установлено' : 'Подключаемся…'}</span></header>
+  return <div className={`app-shell ${!roomId && !inside ? 'landing' : 'interior'}`}>
+    {!roomId && !inside && <SceneAtmosphere />}
+    <header className="topbar"><a className="brand" href="/" aria-label="04agtogether — главная"><span className="brand-mark" aria-hidden="true">▷</span>04agtogether</a><nav className="main-nav"><a href="/" className={!roomId ? "active" : ""}>Главная</a><a href="#extension-install">Расширение</a></nav><span className={`connection ${connected ? 'online' : ''}`} role="status"><i />{connected ? 'Соединение установлено' : 'Подключаемся…'}</span></header>
     <main>
       {error && <div className="message error" role="alert">{error}</div>}
       {notice && <div className="message" role="status">{notice}</div>}
@@ -203,8 +207,10 @@ export default function App() {
             {isOwner && !managed && <form className="panel rename" onSubmit={rename}><label htmlFor="room-title">Название комнаты</label><input id="room-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={80} required /><button className="quiet" disabled={!connected || busy}>Сохранить название</button></form>}
           </aside>
         </div>
-      </> : <section className={`welcome ${roomId ? 'joining' : ''}`}><div className="welcome-copy"><p className="eyebrow">БЛИЖЕ, ДАЖЕ КОГДА ДАЛЕКО</p><h1>{roomId ? 'Вас ждут в комнате.' : <>Хорошее кино.<br />Своя компания.</>}</h1><p className="intro">{roomId ? 'Представьтесь друзьям, чтобы присоединиться к общему вечеру.' : 'Создайте уютное место для общего вечера. Пригласите друзей одной ссылкой — остальное скоро будет здесь.'}</p>
-        <form className="entry-form" onSubmit={enter}><label htmlFor="nickname">Ваш никнейм</label><input id="nickname" placeholder="Как вас называть?" value={nickname} onChange={event => setNickname(event.target.value)} maxLength={32} autoComplete="nickname" required /><button className="primary" disabled={!connected || busy || restoring}>{busy ? 'Подождите…' : roomId ? 'Войти в комнату' : 'Создать комнату'}<span aria-hidden="true">↗</span></button></form>
+      </> : <section className={`welcome ${roomId ? 'joining' : ''}`}><div className="welcome-copy"><p className="eyebrow">БЛИЖЕ, ДАЖЕ КОГДА ДАЛЕКО</p><h1>{roomId ? 'Вас ждут в комнате.' : <>Смотри вместе.<br /><em>В своём кругу.</em></>}</h1><p className="intro">{roomId ? 'Представьтесь друзьям, чтобы присоединиться к общему вечеру.' : 'Синхронный просмотр видео с друзьями — без лишней суеты. Создай комнату, позови своих и погружайся в просмотр вместе.'}</p>
+        {!roomId && <div className="hero-actions"><button className="primary" onClick={() => setEntryMode("create")}>＋ Создать комнату</button><button className="quiet" onClick={() => setEntryMode("join")}>Войти в комнату</button><a className="download-link" href="/downloads/04agtogether-extension.zip" download>Скачать расширение ↗</a></div>}
+        {!roomId && entryMode !== "create" && <form className="link-entry" onSubmit={event => { event.preventDefault(); try { const url = new URL(inviteLink, location.origin); if (url.origin !== location.origin || !roomIdFrom(url.pathname)) throw new Error(); setError(''); navigate(url.pathname); } catch { setError('Вставьте корректную ссылку на комнату этого сайта.'); } }}><label htmlFor="room-link">По ссылке-приглашению</label><div><input id="room-link" type="text" placeholder="Вставьте ссылку на комнату" value={inviteLink} onChange={event => setInviteLink(event.target.value)} required /><button className="primary" aria-label="Войти по ссылке">→</button></div></form>}
+        {(roomId || entryMode === "create") && <form className="entry-form" onSubmit={enter}><label htmlFor="nickname">Ваш никнейм</label><input id="nickname" placeholder="Как вас называть?" value={nickname} onChange={event => setNickname(event.target.value)} maxLength={32} autoComplete="nickname" required /><button className="primary" disabled={!connected || busy || restoring}>{busy ? 'Подождите…' : roomId ? 'Войти в комнату' : 'Создать комнату'}<span aria-hidden="true">↗</span></button></form>}
         {roomId ? <button className="text-button" onClick={() => { setError(''); navigate('/'); }}>Вернуться на главную</button> : <p className="footnote">Без регистрации · Только ваша компания</p>}
         {!roomId && path !== '/' && <p className="hint">Такой страницы нет. Здесь можно создать новую комнату.</p>}
       </div><div className="welcome-art" aria-hidden="true"><div className="film-frame"><span className="art-label">ВЕЧЕР ВМЕСТЕ</span><div className="play-symbol">▷</div><div className="art-line" /><span className="art-caption">Расстояние — просто число.</span></div><div className="art-note">МЕСТО РЯДОМ ВСЕГДА ЕСТЬ</div></div></section>}

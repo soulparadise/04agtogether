@@ -48,7 +48,7 @@ export default function ExtensionInstall({ installed = false, onDetected, compac
     <button className="quiet" disabled={checking} onClick={() => void check()}>{checking ? 'Проверяем…' : 'Проверить расширение'}</button>
     {message && <p className="hint" role="status">{message}</p>}
   </>;
-  return <section className="extension-install" aria-label="Установка расширения 04agtogether">
+  return <section id="extension-install" className="extension-install" aria-label="Установка расширения 04agtogether">
     {available || compact ? <details><summary>{available ? 'Расширение обнаружено · установка и обновление' : 'Установить расширение 04agtogether'}</summary>{instructions}</details> : <><h3>Для совместного просмотра установи расширение 04agtogether</h3>{instructions}</>}
   </section>;
 }
